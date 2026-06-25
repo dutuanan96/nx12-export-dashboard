@@ -1,0 +1,8 @@
+# NX12 Export Dashboard
+# Python 3.11+
+
+# Build tools
+pyinstaller>=6.0
+
+# Note: NX12 API (NXOpen) is provided by Siemens NX installation
+# No additional pip packages required for runtime
