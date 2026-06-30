@@ -60,15 +60,18 @@ def main():
             # Mo STP
             lw.WriteLine("  1/2 Mo STP ...")
 
-            basePart1 = theSession.Parts.OpenBaseDisplay(stpPath)
+            basePart1, loadStatus = theSession.Parts.OpenActiveDisplay(stpPath, NXOpen.DisplayPartOption.AllowAdditional)
+            loadStatus.Dispose()
 
-            if basePart1 is None:
+            workPart = theSession.Parts.Work
+            if workPart is None:
                 lw.WriteLine("  LOI: Khong mo duoc!")
                 failCount += 1
                 continue
-
-            workPart = theSession.Parts.Work
             lw.WriteLine("     OK: " + workPart.Name)
+
+            # Switch sang Modeling truoc khi xuat
+            theSession.ApplicationSwitchImmediate("UG_APP_MODELING")
 
             # Xuat IGES
             lw.WriteLine("  2/2 Xuat IGES ...")
@@ -76,20 +79,40 @@ def main():
             markId1 = theSession.SetUndoMark(NXOpen.Session.MarkVisibility.Visible, "Xuat IGES")
 
             igesCreator = theSession.DexManager.CreateIgesCreator()
-            igesCreator.ExportFrom = NXOpen.IgesCreator.ExportFromOption.DisplayPart
+            igesCreator.InputFile = workPart.FullPath
             igesCreator.OutputFile = igesPath
             igesCreator.ExportModelData = True
-            igesCreator.ExportDrawings = False
-            igesCreator.BcurveTol = 0.058
+            igesCreator.ExportDrawings = True
+            igesCreator.ObjectTypes.Curves = True
+            igesCreator.ObjectTypes.Surfaces = True
+            igesCreator.ObjectTypes.Solids = True
+            igesCreator.ObjectTypes.Annotations = True
+            igesCreator.ObjectTypes.Structures = True
+            igesCreator.MapTabCylToBSurf = True
+            igesCreator.BcurveTol = 0.0508
+            igesCreator.IdenticalPointResolution = 0.001
+            igesCreator.MaxThreeDMdlSpace = 10000.0
+            igesCreator.MapRevolvedFacesTo = NXOpen.IgesCreator.MapRevolvedFacesOption.BSurfaces
+            igesCreator.MapCrossHatchTo = NXOpen.IgesCreator.CrossHatchMapEnum.SectionArea
+            igesCreator.FileSaveFlag = False
+            igesCreator.LayerMask = "1-256"
+            igesCreator.DrawingList = ""
+            igesCreator.ViewList = "Top,Front,Right,Back,Bottom,Left,Isometric,Trimetric,User Defined"
+            settingsFile = "C:\\Program Files\\Siemens\\NX 12.0\\iges\\igesexport.def"
+            if os.path.exists(settingsFile):
+                igesCreator.SettingsFile = settingsFile
 
             igesCreator.Commit()
             igesCreator.Destroy()
 
             theSession.DeleteUndoMark(markId1, None)
 
-            if os.path.exists(igesPath):
-                lw.WriteLine("     OK: " + os.path.basename(igesPath))
+            if os.path.exists(igesPath) and os.path.getsize(igesPath) > 3072:
+                lw.WriteLine("     OK: " + os.path.basename(igesPath) + " (" + str(os.path.getsize(igesPath)) + " bytes)")
                 successCount += 1
+            elif os.path.exists(igesPath):
+                lw.WriteLine("  WARN: IGES qua nho (" + str(os.path.getsize(igesPath)) + " bytes) - co the bi rong!")
+                failCount += 1
             else:
                 lw.WriteLine("  WARN: File IGES khong duoc tao!")
                 failCount += 1
