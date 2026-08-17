@@ -2,17 +2,21 @@
 # NX12 Journal - Export PRT -> DWG
 # Python 2.x / IronPython and Python 3 compatible
 
-try:
-    import NXOpen
-except ImportError:
-    NXOpen = None
 import os
 import sys
-import re
 import time
 import json
+import re
+import io
 
-# ── Configuration ────────────────────────────────────────────────────────────
+try:
+    import NXOpen
+    import NXOpen.Drawings
+    import NXOpen.UF
+except ImportError:
+    NXOpen = None
+
+# Max PRT file size threshold (skip larger files to avoid NX hang)
 MAX_PRT_SIZE_MB = 3.0  # Skip PRT files > MAX_PRT_SIZE_MB (manual export required)
 
 def get_ugii_base_dir():
@@ -96,9 +100,13 @@ def export_single_sheet(theSession, workPart, sheet, output_path, settings_file,
         dxfdwgCreator.DrawingList = sheet.Name
         dxfdwgCreator.ViewEditMode = False
         dxfdwgCreator.FlattenAssembly = False
-        dxfdwgCreator.ExportScaleValue = "1:1"
+
+        # IMPORTANT: NXOpen expects a double (float), not "1:1"
+        dxfdwgCreator.ExportScaleValue = 1.0
+
         dxfdwgCreator.LayerMask = "1-256"
         dxfdwgCreator.WidthFactorMode = NXOpen.DxfdwgCreator.WidthfactorMethodOptions.AutomaticCalculation
+        dxfdwgCreator.ProcessHoldFlag = True
 
         dxfdwgCreator.Commit()
 
@@ -139,7 +147,7 @@ def main():
         first_arg = sys.argv[1]
         if first_arg.lower().endswith(".json") and os.path.exists(first_arg):
             try:
-                with open(first_arg, "r", encoding="utf-8") as f_cfg:
+                with io.open(first_arg, "r", encoding="utf-8-sig") as f_cfg:
                     cfg = json.load(f_cfg)
                 folder = cfg.get("folder", "")
                 run_id = cfg.get("run_id")

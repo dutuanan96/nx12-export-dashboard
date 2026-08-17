@@ -110,7 +110,7 @@ def main():
         first_arg = sys.argv[1]
         if first_arg.lower().endswith(".json") and os.path.exists(first_arg):
             try:
-                with open(first_arg, "r", encoding="utf-8") as f_cfg:
+                with io.open(first_arg, "r", encoding="utf-8-sig") as f_cfg:
                     cfg = json.load(f_cfg)
                 folder = cfg.get("folder", "")
                 run_id = cfg.get("run_id")
