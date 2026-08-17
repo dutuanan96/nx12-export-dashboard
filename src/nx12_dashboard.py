@@ -1,393 +1,646 @@
 """
 NX12 Export Dashboard - 俞俊安
-A dark-themed Tkinter dashboard to run NX12 export tools.
+A dark-themed Tkinter dashboard to run NX12 export tools with exact manifest reporting.
 """
 
 import tkinter as tk
-from tkinter import filedialog, ttk
+from tkinter import filedialog, ttk, messagebox
 import subprocess
 import threading
 import os
+import sys
+import json
 import time
+import uuid
 
-# ── 调色板 ──────────────────────────────────────────────────────────────────
-BG        = "#1a1a2e"
-PANEL     = "#16213e"
-ACCENT1   = "#0f3460"
-BTN_PDF   = "#e94560"
-BTN_IGES  = "#0f7cbb"
-BTN_HOV1  = "#c73652"
-BTN_HOV2  = "#0a6399"
-TEXT      = "#eaeaea"
-SUBTEXT   = "#8892a4"
-SUCCESS   = "#4caf88"
-ERROR     = "#e05252"
-BORDER    = "#2a2a4a"
+# ── High-DPI Awareness on Windows ───────────────────────────────────────────
+try:
+    import ctypes
+    ctypes.windll.shcore.SetProcessDpiAwareness(1)
+except Exception:
+    try:
+        import ctypes
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
 
-# ── NX12 命令路径 ──────────────────────────────────────────────────────────
-RUN_JOURNAL = r"C:\Program Files\Siemens\NX 12.0\NXBIN\run_journal.exe"
-SCRIPT_PDF   = r"D:\tool\export_pdf_NX12.py"
-SCRIPT_IGES  = r"D:\tool\import_stp_export_iges_NX12.py"
-SCRIPT_STEP  = r"D:\tool\export_step_NX12.py"
-SCRIPT_CLEAN = r"D:\tool\cleanup_step_logs.cs"
-SCRIPT_DWG   = r"D:\tool\export_dwg_NX12.py"
+# ── Color Palette ───────────────────────────────────────────────────────────
+BG           = "#121420"
+PANEL        = "#1b1e34"
+PANEL_ACTIVE = "#222642"
+BORDER       = "#2a2f4f"
+TEXT         = "#f1f2f6"
+SUBTEXT      = "#8a94a6"
+MUTED        = "#747d8c"   # Clean, readable placeholder/secondary color
+FOOTER_FG    = "#808e9b"   # Clear branding & version contrast
+
+# Secondary utility button (Browse)
+BTN_BROWSE   = "#252b48"
+BTN_HOV_BROWSE = "#323a61"
+
+# Primary action colors (Balanced saturation, distinct identities)
+BTN_PDF      = "#d64545"   # Soft Crimson
+BTN_HOV_PDF  = "#e05656"
+BTN_STEP     = "#575fcf"   # Royal Indigo
+BTN_HOV_STEP = "#6a72e5"
+BTN_IGES     = "#0984e3"   # Cerulean
+BTN_HOV_IGES = "#2495eb"
+BTN_DWG      = "#05c46b"   # Mint Emerald
+BTN_HOV_DWG  = "#1dd17e"
+
+# Accent & Status
+ACCENT       = "#3867d6"
+ACCENT_HOV   = "#4b7bec"
+SUCCESS      = "#2ed573"
+WARNING      = "#ffa502"
+ERROR        = "#ff4757"
+
+PLACEHOLDER_TEXT = "请选择或粘贴包含 PRT / STP 的工作文件夹…"
 
 
+# ── Helper Functions for Portable Paths ─────────────────────────────────────
+def find_nx_environment():
+    """
+    Locate run_journal.exe and NX installation directory.
+    Searches UGII_BASE_DIR, then common default installation locations.
+    """
+    candidates = []
+    env_base = os.environ.get("UGII_BASE_DIR")
+    if env_base and os.path.exists(env_base):
+        candidates.append(env_base)
+
+    candidates.extend([
+        r"C:\Program Files\Siemens\NX 12.0",
+        r"C:\Program Files\Siemens\NX2406",
+        r"C:\Program Files\Siemens\NX 2406",
+        r"C:\Program Files\Siemens\NX",
+        r"D:\Program Files\Siemens\NX 12.0",
+    ])
+
+    for nx_base in candidates:
+        if not os.path.exists(nx_base):
+            continue
+        run_journal = os.path.join(nx_base, "NXBIN", "run_journal.exe")
+        if os.path.exists(run_journal):
+            return run_journal, nx_base
+
+    return None, None
+
+
+def get_script_path(script_name: str) -> str:
+    """
+    Get the absolute path of a script, supporting development mode
+    and PyInstaller standalone executable mode (_MEIPASS).
+    """
+    if getattr(sys, "frozen", False):
+        base_dir = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
+        cand = os.path.join(base_dir, "src", script_name)
+        if os.path.exists(cand):
+            return cand
+        cand = os.path.join(base_dir, script_name)
+        if os.path.exists(cand):
+            return cand
+
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    cand = os.path.join(current_dir, script_name)
+    if os.path.exists(cand):
+        return cand
+
+    cand = os.path.join(current_dir, "src", script_name)
+    if os.path.exists(cand):
+        return cand
+
+    parent_dir = os.path.dirname(current_dir)
+    cand = os.path.join(parent_dir, "src", script_name)
+    if os.path.exists(cand):
+        return cand
+
+    return os.path.join(current_dir, script_name)
+
+
+# ── Main Application Class ──────────────────────────────────────────────────
 class NX12Dashboard(tk.Tk):
     def __init__(self):
         super().__init__()
-
-        self.title("NX12 导出工具 - 俞俊安")
-        self.resizable(False, False)
+        self.title("NX12 批量导出工具")
+        self.geometry("490x385")
+        self.minsize(490, 385)
+        self.maxsize(900, 385)
+        self.resizable(True, False)
         self.configure(bg=BG)
 
-        w, h = 520, 470
-        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
-        self.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
-
-        self.folder_var  = tk.StringVar(value="")
-        self.status_var  = tk.StringVar(value="")
-        self._running    = False
+        self.folder_var = tk.StringVar(value="")
+        self.status_title_var = tk.StringVar(value="就绪")
+        self.status_sub_var = tk.StringVar(value="请选择工作文件夹并点击上方功能按钮")
+        self._running = False
+        self._last_result = None
+        self._has_placeholder = True
 
         self._build_ui()
+        self._center_window()
 
-    # ── 界面布局 ───────────────────────────────────────────────────────────
+    def _center_window(self):
+        self.update_idletasks()
+        w = self.winfo_width()
+        h = self.winfo_height()
+        ws = self.winfo_screenwidth()
+        hs = self.winfo_screenheight()
+        x = (ws // 2) - (w // 2)
+        y = (hs // 2) - (h // 2)
+        self.geometry(f"{w}x{h}+{x}+{y}")
+
     def _build_ui(self):
-        # ─ 顶部标题栏 ─────────────────────────────────────────────────────
-        hdr = tk.Frame(self, bg=ACCENT1, height=58)
-        hdr.pack(fill="x")
-        hdr.pack_propagate(False)
+        # ─ Header ───────────────────────────────────────────────────────────
+        header = tk.Frame(self, bg=PANEL, bd=0)
+        header.pack(fill="x", padx=14, pady=(12, 0))
+        self._round_border(header)
 
         tk.Label(
-            hdr,
-            text="⚙  NX12 导出工具",
-            font=("Segoe UI", 15, "bold"),
-            fg=TEXT, bg=ACCENT1,
-        ).pack(side="left", padx=20, pady=12)
-
-        tk.Label(
-            hdr,
-            text="俞俊安",
-            font=("Segoe UI", 10),
-            fg="#8892a4", bg=ACCENT1,
-        ).pack(side="right", padx=20, pady=12)
-
-        # ─ 主体内容 ───────────────────────────────────────────────────────
-        body = tk.Frame(self, bg=BG)
-        body.pack(fill="both", expand=True, padx=22, pady=18)
-
-        # 选择来源文件夹
-        tk.Label(
-            body,
-            text="选择来源文件夹",
-            font=("Segoe UI", 9),
-            fg=SUBTEXT, bg=BG,
-        ).pack(anchor="w")
-
-        # 文件夹选择行
-        pick_row = tk.Frame(body, bg=BG)
-        pick_row.pack(fill="x", pady=(4, 14))
-
-        self.path_lbl = tk.Label(
-            pick_row,
-            textvariable=self.folder_var,
-            font=("Consolas", 9),
+            header,
+            text="⚙  NX12 批量导出工具",
+            font=("Segoe UI", 11, "bold"),
             fg=TEXT, bg=PANEL,
-            anchor="w",
-            padx=10,
-            relief="flat",
-            bd=0,
-            width=46,
-        )
-        self.path_lbl.pack(side="left", ipady=8, fill="x", expand=True)
-        self._round_border(pick_row, self.path_lbl)
+        ).pack(side="left", padx=12, pady=7)
 
-        browse_btn = tk.Button(
-            pick_row,
-            text="  📂  浏览",
+        tk.Label(
+            header,
+            text="俞俊安",
             font=("Segoe UI", 9, "bold"),
-            fg=TEXT, bg=ACCENT1,
-            activeforeground=TEXT, activebackground="#1a4a80",
+            fg="#a4b0be", bg=PANEL,
+        ).pack(side="right", padx=12, pady=7)
+
+        # ─ Body ─────────────────────────────────────────────────────────────
+        body = tk.Frame(self, bg=BG)
+        body.pack(fill="both", expand=True, padx=14, pady=8)
+
+        # Folder Selector Group
+        lbl_folder = tk.Label(
+            body,
+            text="工作文件夹",
+            font=("Segoe UI", 9, "bold"),
+            fg=SUBTEXT, bg=BG,
+            anchor="w",
+        )
+        lbl_folder.pack(fill="x", pady=(0, 3))
+
+        f_row = tk.Frame(body, bg=BG)
+        f_row.pack(fill="x", pady=(0, 10))
+
+        self.entry_folder = tk.Entry(
+            f_row,
+            textvariable=self.folder_var,
+            font=("Segoe UI", 9),
+            bg=PANEL, fg=MUTED,
+            insertbackground=TEXT,
+            bd=0, relief="flat",
+            takefocus=True,
+        )
+        self.entry_folder.pack(side="left", fill="x", expand=True, ipady=4, padx=(0, 6))
+        self._round_border(self.entry_folder)
+        self._init_placeholder()
+
+        self.btn_browse = tk.Button(
+            f_row,
+            text="📂 浏览",
+            font=("Segoe UI", 9, "bold"),
+            fg=TEXT, bg=BTN_BROWSE,
+            activeforeground=TEXT, activebackground=BTN_HOV_BROWSE,
             bd=0, cursor="hand2",
+            takefocus=True,
             command=self._browse,
         )
-        browse_btn.pack(side="right", padx=(8, 0), ipady=8, ipadx=6)
-        self._hover(browse_btn, ACCENT1, "#1a4a80")
+        self.btn_browse.pack(side="right", ipadx=10, ipady=3)
+        self._round_border(self.btn_browse)
+        self._hover(self.btn_browse, BTN_BROWSE, BTN_HOV_BROWSE)
+        self._bind_button_keys(self.btn_browse, self._browse)
 
-        # ─ 操作按钮 2x2 ────────────────────────────────────────────────────
+        # 2x2 Action Button Grid
         btn_grid = tk.Frame(body, bg=BG)
-        btn_grid.pack(fill="x", pady=(0, 6))
+        btn_grid.pack(fill="x", pady=(0, 10))
 
-        # Row 1: PDF | STEP
+        # Row 0: PDF | STEP
         self.btn_pdf = tk.Button(
             btn_grid,
             text="📄  导出 PRT → PDF",
-            font=("Segoe UI", 11, "bold"),
+            font=("Segoe UI", 10, "bold"),
             fg=TEXT, bg=BTN_PDF,
-            activeforeground=TEXT, activebackground=BTN_HOV1,
+            activeforeground=TEXT, activebackground=BTN_HOV_PDF,
             bd=0, cursor="hand2",
+            takefocus=True,
             command=lambda: self._run_tool("pdf"),
         )
-        self.btn_pdf.grid(row=0, column=0, sticky="ew", padx=(0, 4), ipady=3)
-        self._hover(self.btn_pdf, BTN_PDF, BTN_HOV1)
+        self.btn_pdf.grid(row=0, column=0, sticky="ew", padx=(0, 3), ipady=5)
+        self._hover(self.btn_pdf, BTN_PDF, BTN_HOV_PDF)
+        self._bind_button_keys(self.btn_pdf, lambda: self._run_tool("pdf"))
 
         self.btn_step = tk.Button(
             btn_grid,
             text="📦  导出 PRT → STEP",
-            font=("Segoe UI", 11, "bold"),
-            fg=TEXT, bg="#7b68ee",
-            activeforeground=TEXT, activebackground="#6a5acd",
+            font=("Segoe UI", 10, "bold"),
+            fg=TEXT, bg=BTN_STEP,
+            activeforeground=TEXT, activebackground=BTN_HOV_STEP,
             bd=0, cursor="hand2",
+            takefocus=True,
             command=lambda: self._run_tool("step"),
         )
-        self.btn_step.grid(row=0, column=1, sticky="ew", padx=(4, 0), ipady=3)
-        self._hover(self.btn_step, "#7b68ee", "#6a5acd")
+        self.btn_step.grid(row=0, column=1, sticky="ew", padx=(3, 0), ipady=5)
+        self._hover(self.btn_step, BTN_STEP, BTN_HOV_STEP)
+        self._bind_button_keys(self.btn_step, lambda: self._run_tool("step"))
 
-        # Row 2: IGES | DWG
+        # Row 1: IGES | DWG
         self.btn_iges = tk.Button(
             btn_grid,
             text="🔄  导入 STP → IGES",
-            font=("Segoe UI", 11, "bold"),
+            font=("Segoe UI", 10, "bold"),
             fg=TEXT, bg=BTN_IGES,
-            activeforeground=TEXT, activebackground=BTN_HOV2,
+            activeforeground=TEXT, activebackground=BTN_HOV_IGES,
             bd=0, cursor="hand2",
+            takefocus=True,
             command=lambda: self._run_tool("iges"),
         )
-        self.btn_iges.grid(row=1, column=0, sticky="ew", padx=(0, 4), pady=(8, 0), ipady=3)
-        self._hover(self.btn_iges, BTN_IGES, BTN_HOV2)
+        self.btn_iges.grid(row=1, column=0, sticky="ew", padx=(0, 3), pady=(6, 0), ipady=5)
+        self._hover(self.btn_iges, BTN_IGES, BTN_HOV_IGES)
+        self._bind_button_keys(self.btn_iges, lambda: self._run_tool("iges"))
 
         self.btn_dwg = tk.Button(
             btn_grid,
             text="📐  导出 PRT → DWG",
-            font=("Segoe UI", 11, "bold"),
-            fg=TEXT, bg="#2ecc71",
-            activeforeground=TEXT, activebackground="#27ae60",
+            font=("Segoe UI", 10, "bold"),
+            fg=TEXT, bg=BTN_DWG,
+            activeforeground=TEXT, activebackground=BTN_HOV_DWG,
             bd=0, cursor="hand2",
+            takefocus=True,
             command=lambda: self._run_tool("dwg"),
         )
-        self.btn_dwg.grid(row=1, column=1, sticky="ew", padx=(4, 0), pady=(8, 0), ipady=3)
-        self._hover(self.btn_dwg, "#2ecc71", "#27ae60")
+        self.btn_dwg.grid(row=1, column=1, sticky="ew", padx=(3, 0), pady=(6, 0), ipady=5)
+        self._hover(self.btn_dwg, BTN_DWG, BTN_HOV_DWG)
+        self._bind_button_keys(self.btn_dwg, lambda: self._run_tool("dwg"))
 
         btn_grid.columnconfigure(0, weight=1)
         btn_grid.columnconfigure(1, weight=1)
 
-        # ─ 底部状态栏 ───────────────────────────────────────────────────────
-        status_frame = tk.Frame(body, bg=PANEL, bd=0)
-        status_frame.pack(fill="x", pady=(16, 0))
+        # ─ Status Card ──────────────────────────────────────────────────────
+        self.status_card = tk.Frame(body, bg=PANEL, bd=0)
+        self.status_card.pack(fill="x", pady=(0, 0))
+        self._round_border(self.status_card)
+
+        # Top row in status card: Indicator + Title + Detail button
+        sc_top = tk.Frame(self.status_card, bg=PANEL)
+        sc_top.pack(fill="x", padx=10, pady=(8, 2))
 
         self.indicator = tk.Label(
-            status_frame, text="●",
-            font=("Segoe UI", 10), fg=SUBTEXT, bg=PANEL,
+            sc_top, text="●",
+            font=("Segoe UI", 11), fg=SUBTEXT, bg=PANEL,
         )
-        self.indicator.pack(side="left", padx=(10, 4), pady=10)
+        self.indicator.pack(side="left", padx=(0, 6))
 
-        self.status_lbl = tk.Label(
-            status_frame,
-            textvariable=self.status_var,
-            font=("Segoe UI", 9),
+        self.status_title_lbl = tk.Label(
+            sc_top,
+            textvariable=self.status_title_var,
+            font=("Segoe UI", 10, "bold"),
+            fg=TEXT, bg=PANEL,
+            anchor="w",
+        )
+        self.status_title_lbl.pack(side="left", fill="x", expand=True)
+
+        self.btn_detail = tk.Button(
+            sc_top,
+            text="📋 查看详情",
+            font=("Segoe UI", 8, "bold"),
+            fg=TEXT, bg=ACCENT,
+            activeforeground=TEXT, activebackground=ACCENT_HOV,
+            bd=0, cursor="hand2",
+            takefocus=True,
+            command=self._show_details,
+        )
+        self._hover(self.btn_detail, ACCENT, ACCENT_HOV)
+        self._bind_button_keys(self.btn_detail, self._show_details)
+
+        # Bottom row in status card: Subtitle / Metrics
+        self.status_sub_lbl = tk.Label(
+            self.status_card,
+            textvariable=self.status_sub_var,
+            font=("Segoe UI", 8),
             fg=SUBTEXT, bg=PANEL,
             anchor="w",
         )
-        self.status_lbl.pack(side="left", fill="x", expand=True, pady=10)
+        self.status_sub_lbl.pack(fill="x", padx=26, pady=(0, 8))
 
-        self._set_status("就绪", SUBTEXT)
-
-        # ─ 底部信息 ───────────────────────────────────────────────────────
+        # ─ Footer ───────────────────────────────────────────────────────────
         tk.Label(
             self,
-            text="Developed by 俞俊安",
-            font=("Segoe UI", 9, "bold"),
-            fg="#8892a4", bg=BG,
-        ).pack(pady=(0, 6))
+            text="NX12 Export Dashboard v1.0.0  ·  Developed by 俞俊安",
+            font=("Segoe UI", 8),
+            fg=FOOTER_FG, bg=BG,
+        ).pack(pady=(6, 8))
 
-    # ── 辅助方法 ─────────────────────────────────────────────────────────────
-    def _round_border(self, parent, widget):
+    # ── Helpers ──────────────────────────────────────────────────────────────
+    def _round_border(self, widget):
         widget.configure(highlightbackground=BORDER, highlightthickness=1)
 
     def _hover(self, widget, normal, hovered):
-        widget.bind("<Enter>", lambda e: widget.configure(bg=hovered))
-        widget.bind("<Leave>", lambda e: widget.configure(bg=normal))
+        widget.bind("<Enter>", lambda e: widget.configure(bg=hovered) if widget["state"] != "disabled" else None)
+        widget.bind("<Leave>", lambda e: widget.configure(bg=normal) if widget["state"] != "disabled" else None)
 
-    def _set_status(self, msg, color=SUBTEXT):
-        self.status_var.set(msg)
-        self.status_lbl.configure(fg=color)
+    def _bind_button_keys(self, widget, command):
+        widget.bind("<Return>", lambda e: command() if widget["state"] != "disabled" else None)
+        widget.bind("<KP_Enter>", lambda e: command() if widget["state"] != "disabled" else None)
+        widget.bind("<space>", lambda e: command() if widget["state"] != "disabled" else None)
+
+    def _init_placeholder(self):
+        self.folder_var.set(PLACEHOLDER_TEXT)
+        self.entry_folder.configure(fg=MUTED)
+        self.entry_folder.bind("<FocusIn>", self._on_focus_in)
+        self.entry_folder.bind("<FocusOut>", self._on_focus_out)
+
+    def _on_focus_in(self, event):
+        if self._has_placeholder:
+            self.folder_var.set("")
+            self.entry_folder.configure(fg=TEXT)
+            self._has_placeholder = False
+
+    def _on_focus_out(self, event):
+        val = self.folder_var.get().strip()
+        if not val:
+            self.folder_var.set(PLACEHOLDER_TEXT)
+            self.entry_folder.configure(fg=MUTED)
+            self._has_placeholder = True
+
+    def _get_clean_folder(self) -> str:
+        if self._has_placeholder:
+            return ""
+        return self.folder_var.get().strip()
+
+    def _set_status(self, title: str, subtext: str, color=SUBTEXT, show_detail=False):
+        self.status_title_var.set(title)
+        self.status_sub_var.set(subtext)
+        self.status_title_lbl.configure(fg=color if color != SUBTEXT else TEXT)
         self.indicator.configure(fg=color)
+        if show_detail and self._last_result:
+            self.btn_detail.pack(side="right", padx=(0, 2))
+        else:
+            self.btn_detail.pack_forget()
 
-    # ── 操作 ─────────────────────────────────────────────────────────────────
+    # ── Actions ──────────────────────────────────────────────────────────────
     def _browse(self):
-        folder = filedialog.askdirectory(title="选择来源文件夹")
+        folder = filedialog.askdirectory(title="选择工作文件夹")
         if folder:
-            self.folder_var.set(os.path.normpath(folder))
-            self._set_status("文件夹已选择，请点击操作按钮。", SUBTEXT)
+            norm = os.path.normpath(folder)
+            self._has_placeholder = False
+            self.folder_var.set(norm)
+            self.entry_folder.configure(fg=TEXT)
+            self._set_status("已选择文件夹", f"路径: {norm}", SUBTEXT, show_detail=False)
+            self._last_result = None
 
-    def _run_tool(self, tool: str):
+    def _run_tool(self, tool_key: str):
         if self._running:
             return
 
-        folder = self.folder_var.get().strip()
-        if not folder:
-            self._set_status("⚠  请先选择文件夹！", ERROR)
+        folder = self._get_clean_folder()
+        if not folder or not os.path.exists(folder):
+            self._set_status("⚠ 请先选择有效文件夹！", "请点击 [📂 浏览] 按钮指定包含 PRT / STP 的目录", ERROR)
+            return
+
+        run_journal, nx_base = find_nx_environment()
+        if not run_journal:
+            self._set_status("❌ 未找到 NX 运行环境", "无法定位 run_journal.exe，请确认已安装 Siemens NX 12.0", ERROR)
+            return
+
+        tool_configs = {
+            "pdf":  ("export_pdf_NX12.py", "PDF", "PRT → PDF"),
+            "step": ("export_step_NX12.py", "STEP", "PRT → STEP (AP214)"),
+            "iges": ("import_stp_export_iges_NX12.py", "IGES", "STP → IGES"),
+            "dwg":  ("export_dwg_NX12.py", "DWG", "PRT → DWG"),
+        }
+
+        if tool_key not in tool_configs:
+            return
+
+        script_file, subfolder, label = tool_configs[tool_key]
+        script_path = get_script_path(script_file)
+
+        if not os.path.exists(script_path):
+            self._set_status("❌ 脚本文件缺失", f"找不到: {script_file}", ERROR)
             return
 
         self._running = True
+        self._last_result = None
         self._lock_buttons(True)
-        self._set_status(f"⏳  执行中… {tool.upper()}", "#f0c040")
+        self._set_status(f"⏳  正在导出 {label}…", "NX 正在后台处理模型，请稍候…", WARNING, show_detail=False)
 
-        if tool == "step":
-            thread = threading.Thread(target=self._run_step_with_cleanup, args=(folder,), daemon=True)
-        elif tool == "dwg":
-            thread = threading.Thread(target=self._run_dwg_with_cleanup, args=(folder,), daemon=True)
-        else:
-            script = SCRIPT_PDF if tool == "pdf" else SCRIPT_IGES
-            label = "PRT → PDF" if tool == "pdf" else "STP → IGES"
-            cmd = [RUN_JOURNAL, script, "-args", folder]
-            thread = threading.Thread(target=self._exec, args=(cmd, label, folder, tool), daemon=True)
-
+        thread = threading.Thread(
+            target=self._execute_batch,
+            args=(run_journal, nx_base, script_path, folder, subfolder, label),
+            daemon=True
+        )
         thread.start()
 
-    def _run_dwg_with_cleanup(self, folder):
-        """DWG export: run export script, then cleanup, then report."""
+    def _execute_batch(self, run_journal, nx_base, script_path, folder, subfolder, label):
+        """Execute journal subprocess with run_id and read atomic manifest export_result.json."""
+        out_folder = os.path.join(folder, subfolder)
+        result_json_path = os.path.join(out_folder, "export_result.json")
+        current_run_id = uuid.uuid4().hex[:12]
+
+        # Invalidate old result manifest strictly
+        if os.path.exists(result_json_path):
+            try:
+                os.remove(result_json_path)
+            except Exception as e_del:
+                self.after(0, self._set_status, "❌ 无法清理旧结果", f"Manifest 被占用: {e_del}", ERROR)
+                self._running = False
+                self.after(0, self._lock_buttons, False)
+                return
+
         try:
             startupinfo = subprocess.STARTUPINFO()
             startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             startupinfo.wShowWindow = 0
 
-            dwg_dir = os.path.join(folder, "DWG")
+            env = os.environ.copy()
+            if nx_base:
+                env["UGII_BASE_DIR"] = nx_base
+                env["UGII_ROOT_DIR"] = os.path.join(nx_base, "UGII")
+                nxbin = os.path.join(nx_base, "NXBIN")
+                ugii = os.path.join(nx_base, "UGII")
+                env["PATH"] = f"{nxbin};{ugii};" + env.get("PATH", "")
 
-            # Step 1: Export DWG
-            self.after(0, self._set_status, "⏳  导出 DWG…", "#f0c040")
-            cmd1 = [RUN_JOURNAL, SCRIPT_DWG, "-args", folder]
-            r1 = subprocess.run(cmd1, timeout=600, startupinfo=startupinfo)
+            cmd = [run_journal, script_path, "-args", folder, current_run_id]
 
-            # Step 2: Cho NX ghi file xong (poll最多 30s)
-            self.after(0, self._set_status, "⏳  等待文件写入…", "#f0c040")
-            dwg_count = 0
-            for _ in range(6):  # 6 x 5s = 30s
-                time.sleep(5)
-                dwg_count = len([f for f in os.listdir(dwg_dir) if f.lower().endswith(".dwg")]) if os.path.exists(dwg_dir) else 0
-                if dwg_count > 0:
-                    break
-
-            # Step 3: Cleanup log files
-            self.after(0, self._set_status, "⏳  清理日志文件…", "#f0c040")
-            cmd2 = [RUN_JOURNAL, SCRIPT_CLEAN, "-args", folder]
-            r2 = subprocess.run(cmd2, timeout=300, startupinfo=startupinfo)
-
-            # Done - check file DWG actually exists + check skipped PRT
-            dwg_files = [f for f in os.listdir(dwg_dir) if f.lower().endswith(".dwg")] if os.path.exists(dwg_dir) else []
-
-            # Check PRT > 3MB (skipped by script)
-            skipped = []
-            for f in os.listdir(folder):
-                if f.lower().endswith(".prt"):
-                    fpath = os.path.join(folder, f)
-                    if os.path.getsize(fpath) > 3 * 1024 * 1024:
-                        skipped.append(f)
-
-            if r1.returncode == 0 and len(dwg_files) > 0:
-                msg = f"✅  PRT → DWG 完成！({len(dwg_files)} 文件)"
-                if skipped:
-                    msg += f"  ⚠ {len(skipped)} 文件>3MB需手动导出"
-                self.after(0, self._set_status, msg, SUCCESS)
-            elif r1.returncode == 0 and len(dwg_files) == 0:
-                self.after(0, self._set_status, "❌  DWG 未生成文件", ERROR)
-            else:
-                self.after(0, self._set_status, "❌  PRT → DWG 出错", ERROR)
-
-        except subprocess.TimeoutExpired:
-            self.after(0, self._set_status, "❌  超时 (>10分钟)", ERROR)
-        except Exception as exc:
-            self.after(0, self._set_status, f"❌  {exc}", ERROR)
-        finally:
-            self._running = False
-            self.after(0, self._lock_buttons, False)
-
-    def _run_step_with_cleanup(self, folder):
-        """STEP export: run export script, then cleanup, then report."""
-        try:
-            startupinfo = subprocess.STARTUPINFO()
-            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            startupinfo.wShowWindow = 0
-
-            step_dir = os.path.join(folder, "STEP")
-
-            # Step 1: Export STEP
-            self.after(0, self._set_status, "⏳  导出 STEP…", "#f0c040")
-            cmd1 = [RUN_JOURNAL, SCRIPT_STEP, "-args", folder]
-            r1 = subprocess.run(cmd1, timeout=600, startupinfo=startupinfo)
-
-            # Step 2: Cleanup log files
-            self.after(0, self._set_status, "⏳  清理日志文件…", "#f0c040")
-            cmd2 = [RUN_JOURNAL, SCRIPT_CLEAN, "-args", folder]
-            r2 = subprocess.run(cmd2, timeout=60, startupinfo=startupinfo)
-
-            # Done - check file STEP actually exists
-            step_files = [f for f in os.listdir(step_dir) if f.lower().endswith((".stp", ".step"))] if os.path.exists(step_dir) else []
-
-            if r1.returncode == 0 and len(step_files) > 0:
-                self.after(0, self._set_status,
-                           f"✅  PRT → STEP 完成！({len(step_files)} 文件)", SUCCESS)
-            elif r1.returncode == 0 and len(step_files) == 0:
-                self.after(0, self._set_status, "❌  STEP 未生成文件", ERROR)
-            else:
-                self.after(0, self._set_status, "❌  PRT → STEP 出错", ERROR)
-
-        except subprocess.TimeoutExpired:
-            self.after(0, self._set_status, "❌  超时 (>10分钟)", ERROR)
-        except Exception as exc:
-            self.after(0, self._set_status, f"❌  {exc}", ERROR)
-        finally:
-            self._running = False
-            self.after(0, self._lock_buttons, False)
-
-    def _exec(self, cmd, label, folder="", tool=""):
-        try:
-            startupinfo = subprocess.STARTUPINFO()
-            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            startupinfo.wShowWindow = 0
-
-            result = subprocess.run(
+            proc = subprocess.run(
                 cmd,
                 timeout=600,
                 startupinfo=startupinfo,
+                env=env,
             )
 
-            # Check output files exist
-            out_files = []
-            if tool == "pdf":
-                pdf_dir = os.path.join(folder, "PDF")
-                out_files = [f for f in os.listdir(pdf_dir) if f.lower().endswith(".pdf")] if os.path.exists(pdf_dir) else []
-            elif tool == "iges":
-                iges_dir = os.path.join(folder, "IGES")
-                out_files = [f for f in os.listdir(iges_dir) if f.lower().endswith(".igs")] if os.path.exists(iges_dir) else []
+            # Poll, read and verify export_result.json matching current_run_id
+            manifest_data = None
+            for _ in range(20):
+                if os.path.exists(result_json_path):
+                    try:
+                        with open(result_json_path, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                        if data.get("run_id") == current_run_id:
+                            manifest_data = data
+                            break
+                    except Exception:
+                        pass
+                time.sleep(0.5)
 
-            if result.returncode == 0 and len(out_files) > 0:
-                self.after(0, self._set_status,
-                           f"✅  {label} 完成！({len(out_files)} 文件)", SUCCESS)
-            elif result.returncode == 0 and len(out_files) == 0:
-                self.after(0, self._set_status,
-                           f"❌  {label} 未生成文件", ERROR)
+            if manifest_data:
+                self._last_result = manifest_data
+                self.after(0, self._handle_manifest_result, manifest_data, label)
+                return
             else:
-                self.after(0, self._set_status,
-                           f"❌  {label} 出错", ERROR)
-        except FileNotFoundError:
-            self.after(0, self._set_status,
-                       "❌  找不到 run_journal.exe", ERROR)
+                if proc.returncode == 0:
+                    self.after(0, self._set_status, f"⚠ {label} 结束，未生成结果", "未能生成与当前 Run ID 匹配的 manifest", WARNING)
+                else:
+                    self.after(0, self._set_status, f"❌ {label} 异常退出", f"NX 返回代码: {proc.returncode}", ERROR)
+
         except subprocess.TimeoutExpired:
-            self.after(0, self._set_status,
-                       "❌  超时 (>10分钟)", ERROR)
+            self.after(0, self._set_status, "❌ 执行超时", "任务运行超过 10 分钟已自动终止", ERROR)
         except Exception as exc:
-            self.after(0, self._set_status, f"❌  {exc}", ERROR)
+            self.after(0, self._set_status, "❌ 发生异常", str(exc), ERROR)
         finally:
             self._running = False
             self.after(0, self._lock_buttons, False)
 
+    def _handle_manifest_result(self, result_data, label):
+        """Update status card based on exact manifest metrics."""
+        total = result_data.get("total", 0)
+        success = result_data.get("success", 0)
+        failed = result_data.get("failed", 0)
+        skipped = result_data.get("skipped", 0)
+
+        if total == 0:
+            self._set_status(f"⚠  {label} 未找到文件", "目录中没有符合条件的输入文件", SUBTEXT, show_detail=False)
+        elif failed == 0 and skipped == 0:
+            self._set_status(
+                "✅  导出全部成功",
+                f"最近结果: {success} 成功 · 共 {total} 个文件",
+                SUCCESS,
+                show_detail=True
+            )
+        elif success > 0 or skipped > 0:
+            sub = f"最近结果: {success} 成功"
+            if failed > 0:
+                sub += f" · {failed} 失败"
+            if skipped > 0:
+                sub += f" · {skipped} 跳过"
+            sub += f" · 共 {total} 个文件"
+            self._set_status(
+                "⚠  部分完成",
+                sub,
+                WARNING,
+                show_detail=True
+            )
+        else:
+            self._set_status(
+                "❌  导出失败",
+                f"最近结果: 0 成功 · {failed} 失败 · 共 {total} 个文件",
+                ERROR,
+                show_detail=True
+            )
+
+    def _show_details(self):
+        """Display detailed modal window of last batch results."""
+        if not self._last_result:
+            return
+
+        dlg = tk.Toplevel(self)
+        dlg.title("批处理执行详情")
+        dlg.geometry("680x380")
+        dlg.minsize(580, 280)
+        dlg.resizable(True, True)
+        dlg.configure(bg=BG)
+        dlg.transient(self)
+        dlg.grab_set()
+
+        # Center dialog
+        dlg.update_idletasks()
+        w, h = 680, 380
+        x = self.winfo_x() + (self.winfo_width() // 2) - (w // 2)
+        y = self.winfo_y() + (self.winfo_height() // 2) - (h // 2)
+        dlg.geometry(f"{w}x{h}+{x}+{y}")
+
+        dlg.bind("<Escape>", lambda e: dlg.destroy())
+
+        # Summary Header
+        total = self._last_result.get("total", 0)
+        success = self._last_result.get("success", 0)
+        failed = self._last_result.get("failed", 0)
+        skipped = self._last_result.get("skipped", 0)
+        op = self._last_result.get("operation", "")
+        run_id = self._last_result.get("run_id", "N/A")
+
+        hdr_frame = tk.Frame(dlg, bg=PANEL, padx=12, pady=10)
+        hdr_frame.pack(fill="x", padx=12, pady=12)
+
+        tk.Label(
+            hdr_frame,
+            text=f"操作: {op}  (Run ID: {run_id})",
+            font=("Segoe UI", 10, "bold"),
+            fg=TEXT, bg=PANEL,
+        ).pack(anchor="w")
+
+        tk.Label(
+            hdr_frame,
+            text=f"总计: {total}  |  成功: {success}  |  失败: {failed}  |  跳过: {skipped}",
+            font=("Segoe UI", 9),
+            fg=SUCCESS if failed == 0 and skipped == 0 else WARNING,
+            bg=PANEL,
+        ).pack(anchor="w", pady=(4, 0))
+
+        # Treeview Table
+        tree_frame = tk.Frame(dlg, bg=BG)
+        tree_frame.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+
+        columns = ("file", "status", "output", "error")
+        tree = ttk.Treeview(tree_frame, columns=columns, show="headings", height=8)
+
+        tree.heading("file", text="输入文件")
+        tree.heading("status", text="状态")
+        tree.heading("output", text="输出文件")
+        tree.heading("error", text="错误说明")
+
+        tree.column("file", width=140, anchor="w")
+        tree.column("status", width=70, anchor="center")
+        tree.column("output", width=180, anchor="w")
+        tree.column("error", width=200, anchor="w")
+
+        style = ttk.Style()
+        style.theme_use("clam")
+        style.configure(
+            "Treeview",
+            background=PANEL,
+            foreground=TEXT,
+            fieldbackground=PANEL,
+            rowheight=22,
+            font=("Segoe UI", 9),
+        )
+        style.configure("Treeview.Heading", font=("Segoe UI", 9, "bold"))
+
+        for item in self._last_result.get("files", []):
+            st = item.get("status", "")
+            out = item.get("output", "")
+            if isinstance(out, list):
+                out = ", ".join(out)
+            err = item.get("error", "") or ""
+            tree.insert("", "end", values=(item.get("input", ""), st, out, err))
+
+        scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=scrollbar.set)
+
+        tree.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
     def _lock_buttons(self, locked: bool):
-        state = "disabled" if locked else "normal"
-        self.btn_pdf.configure(state=state)
-        self.btn_step.configure(state=state)
-        self.btn_iges.configure(state=state)
-        self.btn_dwg.configure(state=state)
+        st = "disabled" if locked else "normal"
+        self.btn_browse.configure(state=st)
+        self.btn_pdf.configure(state=st)
+        self.btn_step.configure(state=st)
+        self.btn_iges.configure(state=st)
+        self.btn_dwg.configure(state=st)
 
 
 if __name__ == "__main__":
