@@ -10,6 +10,7 @@ except ImportError:
 import os
 import sys
 import json
+import time
 
 def write_result_json(pdf_folder, result_data, lw=None):
     """Write export_result.json atomically using a temporary file."""
@@ -160,12 +161,12 @@ def main():
 
             if len(sheetList) == 0:
                 lw.WriteLine("  No drawing sheets found - skipping.")
-                result_data["failed"] += 1
+                result_data["skipped"] += 1
                 result_data["files"].append({
                     "input": prtFile,
                     "output": None,
-                    "status": "failed",
-                    "error": "No drawing sheets in part"
+                    "status": "skipped",
+                    "error": "Skipped: No drawing sheets in part"
                 })
                 continue
 
