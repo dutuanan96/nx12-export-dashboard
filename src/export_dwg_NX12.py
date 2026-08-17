@@ -17,7 +17,7 @@ except ImportError:
     NXOpen = None
 
 # Max PRT file size threshold (skip larger files to avoid NX hang)
-MAX_PRT_SIZE_MB = 3.0  # Skip PRT files > MAX_PRT_SIZE_MB (manual export required)
+MAX_PRT_SIZE_MB = 5.0  # Skip PRT files > MAX_PRT_SIZE_MB (manual export required)
 
 def get_ugii_base_dir():
     """Get the active NX installation directory dynamically."""
@@ -265,6 +265,20 @@ def main():
         workPart = None
 
         try:
+            # Skip large PRT before NX opens it
+            file_size_mb = os.path.getsize(prtPath) / 1024.0 / 1024.0
+            if file_size_mb > MAX_PRT_SIZE_MB:
+                skip_msg = "Skipped: PRT file too large (%.2f MB > %.2f MB)" % (file_size_mb, MAX_PRT_SIZE_MB)
+                lw.WriteLine("  " + skip_msg)
+                result_data["skipped"] += 1
+                result_data["files"].append({
+                    "input": prtFile,
+                    "output": None,
+                    "status": "skipped",
+                    "error": skip_msg
+                })
+                continue
+
             lw.WriteLine("  1/4 Opening PRT ...")
             basePart1 = theSession.Parts.OpenBaseDisplay(prtPath)
 
