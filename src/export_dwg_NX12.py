@@ -87,28 +87,61 @@ def export_single_sheet(theSession, workPart, sheet, output_path, settings_file,
     dxfdwgCreator = None
     markId = None
     try:
+        lw.WriteLine("       [01] sheet.Open")
         sheet.Open()
-        markId = theSession.SetUndoMark(NXOpen.Session.MarkVisibility.Visible, "Export DWG " + sheet.Name)
 
+        lw.WriteLine("       [02] SetUndoMark")
+        markId = theSession.SetUndoMark(
+            NXOpen.Session.MarkVisibility.Visible,
+            "Export DWG " + sheet.Name
+        )
+
+        lw.WriteLine("       [03] CreateDxfdwgCreator")
         dxfdwgCreator = theSession.DexManager.CreateDxfdwgCreator()
+
+        lw.WriteLine("       [04] InputFile")
         dxfdwgCreator.InputFile = workPart.FullPath
+
+        lw.WriteLine("       [05] OutputFile")
         dxfdwgCreator.OutputFile = output_path
+
+        lw.WriteLine("       [06] ExportData")
         dxfdwgCreator.ExportData = NXOpen.DxfdwgCreator.ExportDataOption.Drawing
+
+        lw.WriteLine("       [07] OutputFileType")
         dxfdwgCreator.OutputFileType = NXOpen.DxfdwgCreator.OutputFileTypeOption.Dwg
+
+        lw.WriteLine("       [08] AutoCADRevision")
         dxfdwgCreator.AutoCADRevision = NXOpen.DxfdwgCreator.AutoCADRevisionOptions.R2004
+
+        lw.WriteLine("       [09] SettingsFile")
         dxfdwgCreator.SettingsFile = settings_file
+
+        lw.WriteLine("       [10] DrawingList = " + sheet.Name)
         dxfdwgCreator.DrawingList = sheet.Name
+
+        lw.WriteLine("       [11] ViewEditMode")
         dxfdwgCreator.ViewEditMode = False
+
+        lw.WriteLine("       [12] FlattenAssembly")
         dxfdwgCreator.FlattenAssembly = False
 
-        # IMPORTANT: NXOpen expects a double (float), not "1:1"
-        dxfdwgCreator.ExportScaleValue = 1.0
+        # DO NOT SET ExportScaleValue - Let DXF/DWG translator use settings-file scale
 
+        lw.WriteLine("       [13] LayerMask")
         dxfdwgCreator.LayerMask = "1-256"
-        dxfdwgCreator.WidthFactorMode = NXOpen.DxfdwgCreator.WidthfactorMethodOptions.AutomaticCalculation
+
+        lw.WriteLine("       [14] WidthFactorMode")
+        dxfdwgCreator.WidthFactorMode = (
+            NXOpen.DxfdwgCreator.WidthfactorMethodOptions.AutomaticCalculation
+        )
+
+        lw.WriteLine("       [15] ProcessHoldFlag")
         dxfdwgCreator.ProcessHoldFlag = True
 
+        lw.WriteLine("       [16] Commit BEGIN")
         dxfdwgCreator.Commit()
+        lw.WriteLine("       [17] Commit OK")
 
         # Poll for async DWG translator output (up to 120s)
         for _ in range(240):
@@ -120,7 +153,7 @@ def export_single_sheet(theSession, workPart, sheet, output_path, settings_file,
         return False, "DXF/DWG translator completed without output file after 120s"
 
     except Exception as ex:
-        lw.WriteLine("       Error: " + str(ex))
+        lw.WriteLine("       EXCEPTION: " + str(ex))
         return False, str(ex)
     finally:
         if dxfdwgCreator is not None:
