@@ -34,6 +34,49 @@ def is_valid_iges(filepath, min_size=500):
     except Exception:
         return False
 
+def cleanup_temp_files(folder, iges_folder, lw=None):
+    """
+    Clean up all intermediate PRT and LOG files generated during STP->IGES translation.
+    In the STP folder, keeps ONLY .stp and .step files.
+    In the IGES folder, keeps ONLY .igs and export_result.json.
+    """
+    deleted_count = 0
+    if os.path.exists(folder):
+        for f in os.listdir(folder):
+            fpath = os.path.join(folder, f)
+            if os.path.isdir(fpath):
+                continue
+            ext = os.path.splitext(f)[1].lower()
+            if ext not in (".stp", ".step"):
+                for _ in range(5):
+                    try:
+                        os.remove(fpath)
+                        if lw:
+                            lw.WriteLine("  Deleted temp file: " + f)
+                        deleted_count += 1
+                        break
+                    except Exception:
+                        time.sleep(0.2)
+
+    if os.path.exists(iges_folder):
+        for f in os.listdir(iges_folder):
+            fpath = os.path.join(iges_folder, f)
+            if os.path.isdir(fpath):
+                continue
+            ext = os.path.splitext(f)[1].lower()
+            if ext not in (".igs", ".json", ".tmp"):
+                for _ in range(5):
+                    try:
+                        os.remove(fpath)
+                        if lw:
+                            lw.WriteLine("  Deleted in IGES folder: " + f)
+                        deleted_count += 1
+                        break
+                    except Exception:
+                        time.sleep(0.2)
+
+    return deleted_count
+
 def write_result_json(iges_folder, result_data, lw=None):
     """Write export_result.json atomically using a temporary file."""
     try:
@@ -265,37 +308,9 @@ def main():
 
         lw.WriteLine("")
 
-    # Clean up temporary files generated during conversion
+    # Clean up all temporary files generated during conversion
     lw.WriteLine("--- Cleaning temporary files ---")
-    deletedCount = 0
-    filesAfter = os.listdir(folder)
-
-    for newFile in filesAfter:
-        ext = os.path.splitext(newFile)[1].lower()
-        if ext in (".igs", ".stp", ".step"):
-            continue
-        if newFile in filesBefore:
-            continue
-
-        fpath = os.path.join(folder, newFile)
-        try:
-            os.remove(fpath)
-            lw.WriteLine("  Deleted: " + newFile)
-            deletedCount += 1
-        except Exception as ex:
-            lw.WriteLine("  Could not delete: " + newFile + " - " + str(ex))
-
-    if os.path.exists(igesFolder):
-        for f in os.listdir(igesFolder):
-            ext = os.path.splitext(f)[1].lower()
-            if ext not in (".igs", ".json", ".tmp"):
-                try:
-                    os.remove(os.path.join(igesFolder, f))
-                    lw.WriteLine("  Deleted in IGES folder: " + f)
-                    deletedCount += 1
-                except:
-                    pass
-
+    deletedCount = cleanup_temp_files(folder, igesFolder, lw)
     lw.WriteLine("  Total temporary files deleted: %d" % deletedCount)
     lw.WriteLine("")
 
