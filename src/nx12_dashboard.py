@@ -135,9 +135,12 @@ class NX12Dashboard(tk.Tk):
         self._running = False
         self._last_result = None
         self._has_placeholder = True
+        self._current_proc = None
+        self._cancel_requested = False
 
         self._build_ui()
         self._center_window()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _center_window(self):
         self.update_idletasks()
@@ -284,7 +287,7 @@ class NX12Dashboard(tk.Tk):
         self.status_card.pack(fill="x", pady=(0, 0))
         self._round_border(self.status_card)
 
-        # Top row in status card: Indicator + Title + Detail button
+        # Top row in status card: Indicator + Title + Detail button / Cancel button
         sc_top = tk.Frame(self.status_card, bg=PANEL)
         sc_top.pack(fill="x", padx=10, pady=(8, 2))
 
@@ -315,6 +318,19 @@ class NX12Dashboard(tk.Tk):
         )
         self._hover(self.btn_detail, ACCENT, ACCENT_HOV)
         self._bind_button_keys(self.btn_detail, self._show_details)
+
+        self.btn_cancel = tk.Button(
+            sc_top,
+            text="⛔ 停止",
+            font=("Segoe UI", 8, "bold"),
+            fg=TEXT, bg=BTN_PDF,
+            activeforeground=TEXT, activebackground=BTN_HOV_PDF,
+            bd=0, cursor="hand2",
+            takefocus=True,
+            command=self._cancel_task,
+        )
+        self._hover(self.btn_cancel, BTN_PDF, BTN_HOV_PDF)
+        self._bind_button_keys(self.btn_cancel, self._cancel_task)
 
         # Bottom row in status card: Subtitle / Metrics
         self.status_sub_lbl = tk.Label(
@@ -376,10 +392,47 @@ class NX12Dashboard(tk.Tk):
         self.status_sub_var.set(subtext)
         self.status_title_lbl.configure(fg=color if color != SUBTEXT else TEXT)
         self.indicator.configure(fg=color)
-        if show_detail and self._last_result:
-            self.btn_detail.pack(side="right", padx=(0, 2))
-        else:
+
+        if self._running:
             self.btn_detail.pack_forget()
+            self.btn_cancel.pack(side="right", padx=(0, 2))
+        else:
+            self.btn_cancel.pack_forget()
+            if show_detail and self._last_result:
+                self.btn_detail.pack(side="right", padx=(0, 2))
+            else:
+                self.btn_detail.pack_forget()
+
+    def _cancel_task(self):
+        """Immediately terminate active export process tree."""
+        if not self._running:
+            return
+        self._cancel_requested = True
+        if self._current_proc and self._current_proc.poll() is None:
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(self._current_proc.pid)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+                )
+            except Exception:
+                pass
+        self._set_status("⏹  已手动终止任务", "用户中止了当前批量导出操作", WARNING, show_detail=False)
+
+    def _on_close(self):
+        """Handle window close event and terminate child processes cleanly."""
+        if self._running and self._current_proc and self._current_proc.poll() is None:
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(self._current_proc.pid)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+                )
+            except Exception:
+                pass
+        self.destroy()
 
     # ── Actions ──────────────────────────────────────────────────────────────
     def _browse(self):
@@ -424,9 +477,11 @@ class NX12Dashboard(tk.Tk):
             return
 
         self._running = True
+        self._cancel_requested = False
+        self._current_proc = None
         self._last_result = None
         self._lock_buttons(True)
-        self._set_status(f"⏳  正在导出 {label}…", "NX 正在后台处理模型，请稍候…", WARNING, show_detail=False)
+        self._set_status(f"⏳  正在导出 {label}…", "NX 正在后台处理模型，点击 [⛔ 停止] 可随时终止", WARNING, show_detail=False)
 
         thread = threading.Thread(
             target=self._execute_batch,
@@ -466,12 +521,21 @@ class NX12Dashboard(tk.Tk):
 
             cmd = [run_journal, script_path, "-args", folder, current_run_id]
 
-            proc = subprocess.run(
+            self._current_proc = subprocess.Popen(
                 cmd,
-                timeout=600,
                 startupinfo=startupinfo,
                 env=env,
             )
+
+            try:
+                returncode = self._current_proc.wait(timeout=600)
+            except subprocess.TimeoutExpired:
+                self._cancel_task()
+                self.after(0, self._set_status, "❌ 执行超时", "任务运行超过 10 分钟已自动终止", ERROR)
+                return
+
+            if self._cancel_requested:
+                return
 
             # Poll, read and verify export_result.json matching current_run_id
             manifest_data = None
@@ -492,15 +556,14 @@ class NX12Dashboard(tk.Tk):
                 self.after(0, self._handle_manifest_result, manifest_data, label)
                 return
             else:
-                if proc.returncode == 0:
+                if returncode == 0:
                     self.after(0, self._set_status, f"⚠ {label} 结束，未生成结果", "未能生成与当前 Run ID 匹配的 manifest", WARNING)
                 else:
-                    self.after(0, self._set_status, f"❌ {label} 异常退出", f"NX 返回代码: {proc.returncode}", ERROR)
+                    self.after(0, self._set_status, f"❌ {label} 异常退出", f"NX 返回代码: {returncode}", ERROR)
 
-        except subprocess.TimeoutExpired:
-            self.after(0, self._set_status, "❌ 执行超时", "任务运行超过 10 分钟已自动终止", ERROR)
         except Exception as exc:
-            self.after(0, self._set_status, "❌ 发生异常", str(exc), ERROR)
+            if not self._cancel_requested:
+                self.after(0, self._set_status, "❌ 发生异常", str(exc), ERROR)
         finally:
             self._running = False
             self.after(0, self._lock_buttons, False)
