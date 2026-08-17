@@ -134,12 +134,22 @@ def main():
     lw.WriteLine("========================================")
     lw.WriteLine("")
 
-    # Tim tat ca file .stp / .step trong folder
+    specific_file = None
+    if len(sys.argv) > 3 and sys.argv[3]:
+        specific_file = sys.argv[3]
+
+    # Tim file duoc chi dinh hoac tat ca file .stp / .step trong folder
     stpFiles = []
-    for f in os.listdir(folder):
-        ext = os.path.splitext(f)[1].lower()
-        if ext in (".stp", ".step"):
-            stpFiles.append(f)
+    if specific_file:
+        if os.path.exists(os.path.join(folder, specific_file)):
+            stpFiles.append(specific_file)
+        elif os.path.exists(specific_file):
+            stpFiles.append(os.path.basename(specific_file))
+    else:
+        for f in os.listdir(folder):
+            ext = os.path.splitext(f)[1].lower()
+            if ext in (".stp", ".step"):
+                stpFiles.append(f)
 
     result_data["total"] = len(stpFiles)
 

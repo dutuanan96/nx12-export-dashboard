@@ -519,6 +519,95 @@ class NX12Dashboard(tk.Tk):
                 ugii = os.path.join(nx_base, "UGII")
                 env["PATH"] = f"{nxbin};{ugii};" + env.get("PATH", "")
 
+            # ── Process Isolation for STP -> IGES ────────────────────────────
+            if subfolder == "IGES":
+                stp_files = [f for f in os.listdir(folder) if f.lower().endswith((".stp", ".step"))]
+                total_files = len(stp_files)
+
+                if total_files == 0:
+                    empty_res = {"operation": "stp_to_iges", "run_id": current_run_id, "total": 0, "success": 0, "failed": 0, "skipped": 0, "files": []}
+                    self.after(0, self._handle_manifest_result, empty_res, label)
+                    return
+
+                aggregated = {
+                    "operation": "stp_to_iges",
+                    "run_id": current_run_id,
+                    "total": total_files,
+                    "success": 0,
+                    "failed": 0,
+                    "skipped": 0,
+                    "files": []
+                }
+
+                for idx, stp_name in enumerate(stp_files):
+                    if self._cancel_requested:
+                        break
+
+                    self.after(0, self._set_status, f"⏳ [{idx+1}/{total_files}] 正在导出 IGES…", f"当前文件: {stp_name}", WARNING, False)
+
+                    cmd = [run_journal, script_path, "-args", folder, current_run_id, stp_name]
+                    self._current_proc = subprocess.Popen(cmd, startupinfo=startupinfo, env=env)
+
+                    try:
+                        self._current_proc.wait(timeout=180)
+                    except subprocess.TimeoutExpired:
+                        self._cancel_task()
+                        break
+
+                    if self._cancel_requested:
+                        break
+
+                    # After NX process completely exits, safely delete known translator temp files
+                    for f in os.listdir(folder):
+                        fpath = os.path.join(folder, f)
+                        if os.path.isfile(fpath):
+                            ext = os.path.splitext(f)[1].lower()
+                            if f.endswith("_stp.prt") or ext == ".log" or (ext == ".prt" and f not in stp_files):
+                                try:
+                                    os.remove(fpath)
+                                except Exception:
+                                    pass
+
+                    # Record per-file result
+                    base_name = os.path.splitext(stp_name)[0]
+                    iges_out_path = os.path.join(out_folder, base_name + ".igs")
+                    rel_output = os.path.join("IGES", base_name + ".igs").replace("\\", "/")
+
+                    if os.path.exists(iges_out_path) and os.path.getsize(iges_out_path) >= 500:
+                        aggregated["success"] += 1
+                        aggregated["files"].append({
+                            "input": stp_name,
+                            "output": rel_output,
+                            "status": "success",
+                            "error": None
+                        })
+                    else:
+                        aggregated["failed"] += 1
+                        aggregated["files"].append({
+                            "input": stp_name,
+                            "output": None,
+                            "status": "failed",
+                            "error": "IGES output file not generated or invalid (< 500 bytes)"
+                        })
+
+                # Write final aggregated manifest
+                if not self._cancel_requested:
+                    try:
+                        tmp_json = result_json_path + ".tmp"
+                        with open(tmp_json, "w", encoding="utf-8") as f:
+                            json.dump(aggregated, f, indent=2)
+                        if os.path.exists(result_json_path):
+                            try: os.remove(result_json_path)
+                            except: pass
+                        os.rename(tmp_json, result_json_path)
+                    except Exception:
+                        pass
+
+                    self._last_result = aggregated
+                    self.after(0, self._handle_manifest_result, aggregated, label)
+                return
+
+            # ── Single-Process Batch for PDF, STEP, DWG ─────────────────────
             cmd = [run_journal, script_path, "-args", folder, current_run_id]
 
             self._current_proc = subprocess.Popen(
@@ -536,18 +625,6 @@ class NX12Dashboard(tk.Tk):
 
             if self._cancel_requested:
                 return
-
-            # Clean temporary files for STP->IGES outside NX process safely
-            if subfolder == "IGES" and os.path.exists(folder):
-                for f in os.listdir(folder):
-                    fpath = os.path.join(folder, f)
-                    if os.path.isfile(fpath):
-                        ext = os.path.splitext(f)[1].lower()
-                        if ext not in (".stp", ".step"):
-                            try:
-                                os.remove(fpath)
-                            except Exception:
-                                pass
 
             # Poll, read and verify export_result.json matching current_run_id
             manifest_data = None
