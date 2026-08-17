@@ -1,13 +1,129 @@
-# NX12 Journal - Xuat PRT -> DWG
-# Python 2.x compatible (IronPython)
-# VERSION 4: Skip file PRT > 3MB + cleanup .log + tiếng Trung
+# -*- coding: utf-8 -*-
+# NX12 Journal - Export PRT -> DWG
+# Python 2.x / IronPython and Python 3 compatible
 
-import NXOpen
+try:
+    import NXOpen
+except ImportError:
+    NXOpen = None
 import os
 import sys
+import re
+import time
+import json
 
-# ── Cau hinh ──────────────────────────────────────────────────
-MAX_PRT_SIZE_MB = 3.0       # Bo qua PRT > 3MB (can xuat thu cong)
+# ── Configuration ────────────────────────────────────────────────────────────
+MAX_PRT_SIZE_MB = 3.0  # Skip PRT files > MAX_PRT_SIZE_MB (manual export required)
+
+def get_ugii_base_dir():
+    """Get the active NX installation directory dynamically."""
+    base = os.environ.get("UGII_BASE_DIR")
+    if base and os.path.exists(base):
+        return base
+    candidates = [
+        r"C:\Program Files\Siemens\NX 12.0",
+        r"C:\Program Files\Siemens\NX2406",
+        r"C:\Program Files\Siemens\NX 2406",
+        r"C:\Program Files\Siemens\NX",
+    ]
+    for cand in candidates:
+        if os.path.exists(cand):
+            return cand
+    return r"C:\Program Files\Siemens\NX 12.0"
+
+def sanitize_sheet_name(name):
+    """Sanitize sheet name for safe Windows file names."""
+    cleaned = re.sub(r'[\\/*?:"<>|]', '-', name)
+    cleaned = cleaned.strip()
+    return cleaned if cleaned else "Sheet"
+
+def write_result_json(dwg_folder, result_data, lw=None):
+    """Write export_result.json atomically using a temporary file."""
+    try:
+        json_path = os.path.join(dwg_folder, "export_result.json")
+        tmp_path = json_path + ".tmp"
+        with open(tmp_path, "w") as f:
+            json.dump(result_data, f, indent=2)
+        if os.path.exists(json_path):
+            try:
+                os.remove(json_path)
+            except:
+                pass
+        os.rename(tmp_path, json_path)
+    except Exception as e:
+        if lw is not None:
+            try:
+                lw.WriteLine("  ERROR writing export_result.json: " + str(e))
+            except:
+                pass
+
+def cleanup_logs(dwg_folder, base_name=None):
+    """Clean up .log files in the DWG directory."""
+    if not os.path.exists(dwg_folder):
+        return
+    for f in os.listdir(dwg_folder):
+        if f.lower().endswith(".log"):
+            if base_name is None or base_name in f:
+                try:
+                    os.remove(os.path.join(dwg_folder, f))
+                except:
+                    pass
+
+def export_single_sheet(theSession, workPart, sheet, output_path, settings_file, lw):
+    """Export one drawing sheet to DWG. Returns True if output file exists and non-empty."""
+    # Pre-clean stale per-file output
+    if os.path.exists(output_path):
+        try:
+            os.remove(output_path)
+            lw.WriteLine("       Removed stale output: " + os.path.basename(output_path))
+        except Exception as ex_del:
+            lw.WriteLine("       ERROR: Cannot delete stale output: " + str(ex_del))
+            return False
+
+    dxfdwgCreator = None
+    markId = None
+    try:
+        sheet.Open()
+        markId = theSession.SetUndoMark(NXOpen.Session.MarkVisibility.Visible, "Export DWG " + sheet.Name)
+
+        dxfdwgCreator = theSession.DexManager.CreateDxfdwgCreator()
+        dxfdwgCreator.InputFile = workPart.FullPath
+        dxfdwgCreator.OutputFile = output_path
+        dxfdwgCreator.ExportData = NXOpen.DxfdwgCreator.ExportDataOption.Drawing
+        dxfdwgCreator.OutputFileType = NXOpen.DxfdwgCreator.OutputFileTypeOption.Dwg
+        dxfdwgCreator.AutoCADRevision = NXOpen.DxfdwgCreator.AutoCADRevisionOptions.R2004
+        dxfdwgCreator.SettingsFile = settings_file
+        dxfdwgCreator.DrawingList = sheet.Name
+        dxfdwgCreator.ViewEditMode = False
+        dxfdwgCreator.FlattenAssembly = False
+        dxfdwgCreator.ExportScaleValue = "1:1"
+        dxfdwgCreator.LayerMask = "1-256"
+        dxfdwgCreator.WidthFactorMode = NXOpen.DxfdwgCreator.WidthfactorMethodOptions.AutomaticCalculation
+
+        dxfdwgCreator.Commit()
+
+        # Poll for async DWG translator output (up to 15s)
+        for _ in range(50):
+            if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                return True
+            time.sleep(0.3)
+
+        return False
+
+    except Exception as ex:
+        lw.WriteLine("       Error: " + str(ex))
+        return False
+    finally:
+        if dxfdwgCreator is not None:
+            try:
+                dxfdwgCreator.Destroy()
+            except:
+                pass
+        if markId is not None:
+            try:
+                theSession.DeleteUndoMark(markId, None)
+            except:
+                pass
 
 def main():
     theSession = NXOpen.Session.GetSession()
@@ -15,19 +131,25 @@ def main():
     lw.Open()
 
     folder = ""
+    run_id = None
     if len(sys.argv) > 1 and sys.argv[1]:
         folder = sys.argv[1]
     else:
         folder = os.getcwd()
 
+    if len(sys.argv) > 2 and sys.argv[2]:
+        run_id = sys.argv[2]
+
     lw.WriteLine("========================================")
-    lw.WriteLine("  导出 PRT -> DWG")
-    lw.WriteLine("  跳过 > %d MB 的文件" % MAX_PRT_SIZE_MB)
+    lw.WriteLine("  EXPORT PRT -> DWG (NX 12.0)")
+    lw.WriteLine("  Skip files > %.1f MB" % MAX_PRT_SIZE_MB)
     lw.WriteLine("========================================")
-    lw.WriteLine("目录: " + folder)
+    lw.WriteLine("Directory: " + folder)
+    if run_id:
+        lw.WriteLine("Run ID: " + str(run_id))
 
     if not os.path.exists(folder):
-        lw.WriteLine("错误: 找不到目录!")
+        lw.WriteLine("ERROR: Directory not found!")
         lw.Close()
         return
 
@@ -37,21 +159,31 @@ def main():
 
     prtFiles = [f for f in os.listdir(folder) if f.lower().endswith(".prt")]
 
+    result_data = {
+        "operation": "prt_to_dwg",
+        "run_id": run_id,
+        "total": len(prtFiles),
+        "success": 0,
+        "failed": 0,
+        "skipped": 0,
+        "files": []
+    }
+
     if len(prtFiles) == 0:
-        lw.WriteLine("未找到 .prt 文件!")
+        lw.WriteLine("No .prt files found!")
+        write_result_json(dwgFolder, result_data)
         lw.Close()
         return
 
-    lw.WriteLine("找到 %d 个 PRT 文件" % len(prtFiles))
-    lw.WriteLine("导出到: " + dwgFolder)
+    lw.WriteLine("Found %d PRT files." % len(prtFiles))
+    lw.WriteLine("Exporting to: " + dwgFolder)
     lw.WriteLine("")
 
-    settingsFile = "C:\\Program Files\\Siemens\\NX 12.0\\dxfdwg\\dxfdwg.def"
-
-    successCount = 0
-    failCount = 0
-    skipCount = 0
-    skipFiles = []
+    # Dynamically locate settings file
+    ugii_base = get_ugii_base_dir()
+    settingsFile = os.path.join(ugii_base, "dxfdwg", "dxfdwg.def")
+    if not os.path.exists(settingsFile):
+        settingsFile = r"C:\Program Files\Siemens\NX 12.0\dxfdwg\dxfdwg.def"
 
     for prtFile in prtFiles:
         prtPath = os.path.join(folder, prtFile)
@@ -59,167 +191,157 @@ def main():
 
         lw.WriteLine("--- " + prtFile + " ---")
 
-        # ── 检查 PRT 文件大小 ──
+        # ── Check file size ──
         prtSize = os.path.getsize(prtPath)
         prtMB = prtSize / 1024.0 / 1024.0
 
         if prtMB > MAX_PRT_SIZE_MB:
-            lw.WriteLine("  跳过: %.1f MB > %d MB (需手动导出)" % (prtMB, MAX_PRT_SIZE_MB))
-            skipCount += 1
-            skipFiles.append(prtFile)
+            skip_msg = "Skipped: %.1f MB > %.1f MB (manual export required)" % (prtMB, MAX_PRT_SIZE_MB)
+            lw.WriteLine("  " + skip_msg)
+            result_data["skipped"] += 1
+            result_data["files"].append({
+                "input": prtFile,
+                "output": None,
+                "status": "skipped",
+                "error": skip_msg
+            })
             lw.WriteLine("")
             continue
 
-        try:
-            # 打开 PRT
-            lw.WriteLine("  1/4 打开 PRT ...")
+        workPart = None
 
+        try:
+            lw.WriteLine("  1/4 Opening PRT ...")
             basePart1 = theSession.Parts.OpenBaseDisplay(prtPath)
 
             if basePart1 is None:
-                lw.WriteLine("  错误: 无法打开!")
-                failCount += 1
+                lw.WriteLine("  ERROR: Could not open part!")
+                result_data["failed"] += 1
+                result_data["files"].append({
+                    "input": prtFile,
+                    "output": None,
+                    "status": "failed",
+                    "error": "Could not open PRT file"
+                })
                 continue
 
             workPart = theSession.Parts.Work
-            lw.WriteLine("     完成: " + workPart.Name)
+            lw.WriteLine("     OK: " + workPart.Name)
 
-            # 切换到制图模式
-            lw.WriteLine("  2/4 切换制图模式 ...")
-
+            lw.WriteLine("  2/4 Switching to Drafting ...")
             try:
                 theSession.ApplicationSwitchImmediate("UG_APP_DRAFTING")
                 workPart.Drafting.EnterDraftingApplication()
-                lw.WriteLine("     完成: 制图模式")
+                lw.WriteLine("     OK: Drafting mode")
             except Exception as exDraft:
-                lw.WriteLine("     警告: " + str(exDraft))
+                lw.WriteLine("     WARN: " + str(exDraft))
 
-            # 获取图纸
-            lw.WriteLine("  3/4 查找图纸 ...")
-
+            lw.WriteLine("  3/4 Finding drawing sheets ...")
             sheetList = []
             for ds in workPart.DrawingSheets:
                 sheetList.append(ds)
-                lw.WriteLine("     图纸: " + ds.Name)
+                lw.WriteLine("     Sheet: " + ds.Name)
 
-            lw.WriteLine("     共 %d 张" % len(sheetList))
+            lw.WriteLine("     Total: %d sheets" % len(sheetList))
 
             if len(sheetList) == 0:
-                lw.WriteLine("  无图纸 - 跳过")
-                workPart.Close(1, 1, None)
-                failCount += 1
+                lw.WriteLine("  No drawing sheets - skipping.")
+                result_data["failed"] += 1
+                result_data["files"].append({
+                    "input": prtFile,
+                    "output": None,
+                    "status": "failed",
+                    "error": "No drawing sheets in part"
+                })
                 continue
 
-            # 导出 DWG
-            lw.WriteLine("  4/4 导出 DWG ...")
+            lw.WriteLine("  4/4 Exporting DWG ...")
+            sheetOkOutputs = []
 
-            sheetOkCount = 0
             for idx, sheet in enumerate(sheetList):
-                sheetName = sheet.Name
-                safeName = sheetName.replace("/", "-").replace("\\", "-") \
-                                    .replace(":", "-").replace("*", "-") \
-                                    .replace("?", "-")
-
+                safeSheetName = sanitize_sheet_name(sheet.Name)
                 if len(sheetList) == 1:
                     sheetDwgPath = os.path.join(dwgFolder, baseName + ".dwg")
                 else:
-                    sheetDwgPath = os.path.join(dwgFolder, baseName + "_" + safeName + ".dwg")
+                    sheetDwgPath = os.path.join(dwgFolder, "%s_%02d_%s.dwg" % (baseName, idx + 1, safeSheetName))
 
-                lw.WriteLine("     [%d/%d] 图纸: %s" % (idx + 1, len(sheetList), sheetName))
+                lw.WriteLine("     [%d/%d] Sheet: %s" % (idx + 1, len(sheetList), sheet.Name))
 
-                ok = exportDwg(theSession, workPart, sheet, sheetDwgPath, settingsFile, lw)
+                ok = export_single_sheet(theSession, workPart, sheet, sheetDwgPath, settingsFile, lw)
 
                 if ok:
                     fileSize = os.path.getsize(sheetDwgPath)
                     sizeMB = fileSize / 1024.0 / 1024.0
-                    lw.WriteLine("       成功: %.1f MB" % sizeMB)
-                    sheetOkCount += 1
+                    lw.WriteLine("       OK: %.1f MB" % sizeMB)
+                    rel_output = os.path.join("DWG", os.path.basename(sheetDwgPath)).replace("\\", "/")
+                    sheetOkOutputs.append(rel_output)
                 else:
-                    lw.WriteLine("       失败!")
+                    lw.WriteLine("       Failed!")
 
-            if sheetOkCount > 0:
-                successCount += 1
-                lw.WriteLine("  导出完成 %d/%d 张图纸" % (sheetOkCount, len(sheetList)))
+            if len(sheetOkOutputs) == len(sheetList) and len(sheetList) > 0:
+                result_data["success"] += 1
+                result_data["files"].append({
+                    "input": prtFile,
+                    "output": sheetOkOutputs[0] if len(sheetOkOutputs) == 1 else sheetOkOutputs,
+                    "status": "success",
+                    "error": None
+                })
+                lw.WriteLine("  Exported %d/%d sheets successfully" % (len(sheetOkOutputs), len(sheetList)))
+            elif len(sheetOkOutputs) > 0:
+                result_data["failed"] += 1
+                result_data["files"].append({
+                    "input": prtFile,
+                    "output": sheetOkOutputs,
+                    "status": "failed",
+                    "error": "Partial sheet export failure (%d/%d sheets exported)" % (len(sheetOkOutputs), len(sheetList))
+                })
+                lw.WriteLine("  Partial export: %d/%d sheets" % (len(sheetOkOutputs), len(sheetList)))
             else:
-                failCount += 1
+                result_data["failed"] += 1
+                result_data["files"].append({
+                    "input": prtFile,
+                    "output": None,
+                    "status": "failed",
+                    "error": "All sheet exports failed"
+                })
+                lw.WriteLine("  Failed to export sheets!")
 
-            workPart.Close(1, 1, None)
-
-            # ── 清理日志文件 ──
-            cleanupLogs(dwgFolder, baseName)
-
-            lw.WriteLine("  完成: " + prtFile)
+            lw.WriteLine("  COMPLETED: " + prtFile)
             lw.WriteLine("")
 
         except Exception as ex:
-            lw.WriteLine("  错误: " + str(ex))
-            failCount += 1
+            lw.WriteLine("  ERROR: " + str(ex))
+            result_data["failed"] += 1
+            result_data["files"].append({
+                "input": prtFile,
+                "output": None,
+                "status": "failed",
+                "error": str(ex)
+            })
             lw.WriteLine("")
 
-    # ── 清理所有日志 ──
-    cleanupAllLogs(dwgFolder)
+        finally:
+            if workPart is not None:
+                try:
+                    workPart.Close(NXOpen.BasePart.CloseWholeTree.TrueValue, NXOpen.BasePart.CloseModified.CloseModified, None)
+                except:
+                    pass
+
+        cleanup_logs(dwgFolder, baseName)
+
+    # Final cleanup of all logs
+    cleanup_logs(dwgFolder)
+    write_result_json(dwgFolder, result_data, lw)
 
     lw.WriteLine("========================================")
-    lw.WriteLine("  结果:")
-    lw.WriteLine("  成功: %d / %d" % (successCount, successCount + failCount))
-    lw.WriteLine("  失败: %d" % failCount)
-    if skipCount > 0:
-        lw.WriteLine("  跳过 (> %d MB): %d" % (MAX_PRT_SIZE_MB, skipCount))
-        for sf in skipFiles:
-            lw.WriteLine("    - " + sf)
+    lw.WriteLine("  RESULTS:")
+    lw.WriteLine("  Total: %d" % result_data["total"])
+    lw.WriteLine("  Success: %d" % result_data["success"])
+    lw.WriteLine("  Failed: %d" % result_data["failed"])
+    lw.WriteLine("  Skipped: %d" % result_data["skipped"])
     lw.WriteLine("========================================")
     lw.Close()
 
-
-def exportDwg(theSession, workPart, sheet, outputPath, settingsFile, lw):
-    """导出1张图纸为DWG。成功返回True。"""
-    try:
-        markId = theSession.SetUndoMark(
-            NXOpen.Session.MarkVisibility.Visible,
-            "导出 DWG " + sheet.Name)
-
-        dxfdwgCreator = theSession.DexManager.CreateDxfdwgCreator()
-        dxfdwgCreator.InputFile = workPart.FullPath
-        dxfdwgCreator.OutputFile = outputPath
-        dxfdwgCreator.ExportData = NXOpen.DxfdwgCreator.ExportDataOption.Drawing
-        dxfdwgCreator.OutputFileType = NXOpen.DxfdwgCreator.OutputFileTypeOption.Dwg
-        dxfdwgCreator.AutoCADRevision = NXOpen.DxfdwgCreator.AutoCADRevisionOptions.R2004
-        dxfdwgCreator.SettingsFile = settingsFile
-        dxfdwgCreator.ViewEditMode = True
-        dxfdwgCreator.FlattenAssembly = False
-        dxfdwgCreator.ExportScaleValue = "1:1"
-        dxfdwgCreator.LayerMask = "1-256"
-        dxfdwgCreator.WidthFactorMode = NXOpen.DxfdwgCreator.WidthfactorMethodOptions.AutomaticCalculation
-
-        dxfdwgCreator.Commit()
-        dxfdwgCreator.Destroy()
-
-        theSession.DeleteUndoMark(markId, None)
-        return os.path.exists(outputPath)
-
-    except Exception as ex:
-        lw.WriteLine("       错误: " + str(ex))
-        return False
-
-
-def cleanupLogs(dwgFolder, baseName):
-    """清理与baseName相关的日志文件。"""
-    for f in os.listdir(dwgFolder):
-        if f.lower().endswith(".log") and baseName in f:
-            try:
-                os.remove(os.path.join(dwgFolder, f))
-            except:
-                pass
-
-
-def cleanupAllLogs(dwgFolder):
-    """清理DWG目录中所有日志文件。"""
-    for f in os.listdir(dwgFolder):
-        if f.lower().endswith(".log"):
-            try:
-                os.remove(os.path.join(dwgFolder, f))
-            except:
-                pass
-
-
-main()
+if __name__ in ("__main__", "__builtin__", "builtins"):
+    if NXOpen is not None:
+        main()

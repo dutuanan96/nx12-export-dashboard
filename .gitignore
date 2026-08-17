@@ -8,10 +8,15 @@ env/
 venv/
 .venv/
 
-# Build
+# Build & Packages
 build/
 dist/
 *.spec
+
+# Test & Scratch files
+scratch/
+export_result.json
+export_result.json.tmp
 
 # IDE
 .vscode/
@@ -26,6 +31,7 @@ desktop.ini
 
 # Logs
 *.log
+*.LOG
 
 # Temporary files
 *.tmp

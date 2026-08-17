@@ -1,9 +1,60 @@
-# NX12 Journal - Nhap STP -> Xuat IGES
-# Python 2.x compatible (IronPython)
+# -*- coding: utf-8 -*-
+# NX12 Journal - Import STP -> Export IGES
+# Python 2.x / IronPython and Python 3 compatible
 
-import NXOpen
+try:
+    import NXOpen
+except ImportError:
+    NXOpen = None
 import os
 import sys
+import time
+import json
+
+def is_valid_iges(filepath, min_size=500):
+    """
+    Structural sanity check for exported IGES file.
+    IGES files have standard 80-char card images with section identifiers (S, G, D, P, T) in col 72 (index 72).
+    A valid IGES file must contain at least the G, D, P, and T sections and meet min_size.
+    """
+    if not os.path.exists(filepath):
+        return False
+    size = os.path.getsize(filepath)
+    if size < min_size:
+        return False
+    try:
+        sections = set()
+        with open(filepath, "r") as f:
+            for line in f:
+                line_str = line.rstrip("\r\n")
+                if len(line_str) >= 73:
+                    sec = line_str[72]
+                    if sec in ("S", "G", "D", "P", "T"):
+                        sections.add(sec)
+        required_sections = {"G", "D", "P", "T"}
+        return required_sections.issubset(sections)
+    except Exception:
+        return False
+
+def write_result_json(iges_folder, result_data, lw=None):
+    """Write export_result.json atomically using a temporary file."""
+    try:
+        json_path = os.path.join(iges_folder, "export_result.json")
+        tmp_path = json_path + ".tmp"
+        with open(tmp_path, "w") as f:
+            json.dump(result_data, f, indent=2)
+        if os.path.exists(json_path):
+            try:
+                os.remove(json_path)
+            except:
+                pass
+        os.rename(tmp_path, json_path)
+    except Exception as e:
+        if lw is not None:
+            try:
+                lw.WriteLine("  ERROR writing export_result.json: " + str(e))
+            except:
+                pass
 
 def main():
     theSession = NXOpen.Session.GetSession()
@@ -11,72 +62,108 @@ def main():
     lw.Open()
 
     folder = ""
+    run_id = None
     if len(sys.argv) > 1 and sys.argv[1]:
         folder = sys.argv[1]
     else:
         folder = os.getcwd()
 
-    lw.WriteLine("========================================")
-    lw.WriteLine("  NHAP STP -> XUAT IGES (NX 12.0)")
-    lw.WriteLine("========================================")
-    lw.WriteLine("Thu muc: " + folder)
-    lw.WriteLine("")
-
-    if not os.path.exists(folder):
-        lw.WriteLine("LOI: Khong tim thay thu muc!")
-        lw.Close()
-        return
+    if len(sys.argv) > 2 and sys.argv[2]:
+        run_id = sys.argv[2]
 
     igesFolder = os.path.join(folder, "IGES")
     if not os.path.exists(igesFolder):
         os.makedirs(igesFolder)
 
-    # Tim file STP/STEP
-    stpFiles = [f for f in os.listdir(folder) if f.lower().endswith((".stp", ".step"))]
+    result_data = {
+        "operation": "stp_to_iges",
+        "run_id": run_id,
+        "total": 0,
+        "success": 0,
+        "failed": 0,
+        "skipped": 0,
+        "files": []
+    }
 
-    if len(stpFiles) == 0:
-        lw.WriteLine("KHONG tim thay file .stp / .step nao!")
-        lw.Close()
-        return
-
-    lw.WriteLine("Tim thay %d file STP." % len(stpFiles))
-    lw.WriteLine("Xuat IGES vao: " + igesFolder)
+    lw.WriteLine("========================================")
+    lw.WriteLine("  NX12 BATCH IMPORT STP -> EXPORT IGES")
+    lw.WriteLine("  Folder: " + folder)
+    if run_id:
+        lw.WriteLine("  Run ID: " + str(run_id))
+    lw.WriteLine("========================================")
     lw.WriteLine("")
 
-    # Luu danh sach file truoc
+    # Tim tat ca file .stp / .step trong folder
+    stpFiles = []
+    for f in os.listdir(folder):
+        ext = os.path.splitext(f)[1].lower()
+        if ext in (".stp", ".step"):
+            stpFiles.append(f)
+
+    result_data["total"] = len(stpFiles)
+
+    if len(stpFiles) == 0:
+        lw.WriteLine("Khong tim thay file .stp / .step nao!")
+        lw.Close()
+        write_result_json(igesFolder, result_data, lw)
+        return
+
+    lw.WriteLine("Tim thay %d file STP can chuyen doi:" % len(stpFiles))
+    for f in stpFiles:
+        lw.WriteLine("  - " + f)
+    lw.WriteLine("")
+
+    # Ghi nhan file truoc khi xu ly de cleanup
     filesBefore = set(os.listdir(folder))
 
-    successCount = 0
-    failCount = 0
-
-    for stpFile in stpFiles:
-        stpPath = os.path.join(folder, stpFile)
+    for i, stpFile in enumerate(stpFiles):
         baseName = os.path.splitext(stpFile)[0]
+        stpPath = os.path.join(folder, stpFile)
         igesPath = os.path.join(igesFolder, baseName + ".igs")
 
-        lw.WriteLine("--- " + stpFile + " ---")
+        lw.WriteLine("----------------------------------------")
+        lw.WriteLine("[%d/%d] Dang xu ly: %s" % (i + 1, len(stpFiles), stpFile))
+
+        # Stale output pre-cleanup
+        if os.path.exists(igesPath):
+            try:
+                os.remove(igesPath)
+                lw.WriteLine("  Cleaned up stale output: " + os.path.basename(igesPath))
+            except Exception as e_del:
+                lw.WriteLine("  ERROR: Could not remove stale IGES file: " + str(e_del))
+                result_data["failed"] += 1
+                result_data["files"].append({
+                    "input": stpFile,
+                    "output": None,
+                    "status": "failed",
+                    "error": "Could not remove stale output file: " + str(e_del)
+                })
+                continue
+
+        workPart = None
+        igesCreator = None
+        markId1 = None
 
         try:
-            # Mo STP
-            lw.WriteLine("  1/2 Mo STP ...")
+            lw.WriteLine("  1/2 Opening STP ...")
+            basePart1 = theSession.Parts.OpenBaseDisplay(stpPath)
 
-            basePart1, loadStatus = theSession.Parts.OpenActiveDisplay(stpPath, NXOpen.DisplayPartOption.AllowAdditional)
-            loadStatus.Dispose()
+            if basePart1 is None:
+                lw.WriteLine("  ERROR: Could not open STP file!")
+                result_data["failed"] += 1
+                result_data["files"].append({
+                    "input": stpFile,
+                    "output": None,
+                    "status": "failed",
+                    "error": "Could not open STP file"
+                })
+                continue
 
             workPart = theSession.Parts.Work
-            if workPart is None:
-                lw.WriteLine("  LOI: Khong mo duoc!")
-                failCount += 1
-                continue
             lw.WriteLine("     OK: " + workPart.Name)
 
-            # Switch sang Modeling truoc khi xuat
-            theSession.ApplicationSwitchImmediate("UG_APP_MODELING")
-
-            # Xuat IGES
-            lw.WriteLine("  2/2 Xuat IGES ...")
-
-            markId1 = theSession.SetUndoMark(NXOpen.Session.MarkVisibility.Visible, "Xuat IGES")
+            lw.WriteLine("  2/2 Exporting IGES ...")
+            markId1 = theSession.SetUndoMark(NXOpen.Session.MarkVisibility.Visible, "Export IGES")
 
             igesCreator = theSession.DexManager.CreateIgesCreator()
             igesCreator.InputFile = workPart.FullPath
@@ -98,77 +185,114 @@ def main():
             igesCreator.LayerMask = "1-256"
             igesCreator.DrawingList = ""
             igesCreator.ViewList = "Top,Front,Right,Back,Bottom,Left,Isometric,Trimetric,User Defined"
-            settingsFile = "C:\\Program Files\\Siemens\\NX 12.0\\iges\\igesexport.def"
+            settingsFile = r"C:\Program Files\Siemens\NX 12.0\iges\igesexport.def"
             if os.path.exists(settingsFile):
                 igesCreator.SettingsFile = settingsFile
 
             igesCreator.Commit()
-            igesCreator.Destroy()
 
-            theSession.DeleteUndoMark(markId1, None)
+            # Poll for async completion (up to 10s)
+            for _ in range(30):
+                if is_valid_iges(igesPath, min_size=500):
+                    break
+                time.sleep(0.3)
 
-            if os.path.exists(igesPath) and os.path.getsize(igesPath) > 3072:
-                lw.WriteLine("     OK: " + os.path.basename(igesPath) + " (" + str(os.path.getsize(igesPath)) + " bytes)")
-                successCount += 1
-            elif os.path.exists(igesPath):
-                lw.WriteLine("  WARN: IGES qua nho (" + str(os.path.getsize(igesPath)) + " bytes) - co the bi rong!")
-                failCount += 1
+            if is_valid_iges(igesPath, min_size=500):
+                size_bytes = os.path.getsize(igesPath)
+                lw.WriteLine("     OK: %s (%d bytes)" % (os.path.basename(igesPath), size_bytes))
+                result_data["success"] += 1
+                rel_output = os.path.join("IGES", os.path.basename(igesPath)).replace("\\", "/")
+                result_data["files"].append({
+                    "input": stpFile,
+                    "output": rel_output,
+                    "status": "success",
+                    "error": None
+                })
+                lw.WriteLine("  COMPLETED: " + stpFile)
             else:
-                lw.WriteLine("  WARN: File IGES khong duoc tao!")
-                failCount += 1
-
-            workPart.Close(1, 1, None)
-
-            lw.WriteLine("  HOAN THANH: " + stpFile)
-            lw.WriteLine("")
+                lw.WriteLine("  WARN: IGES file was not created or invalid structure/size!")
+                result_data["failed"] += 1
+                result_data["files"].append({
+                    "input": stpFile,
+                    "output": None,
+                    "status": "failed",
+                    "error": "IGES output file not generated or invalid (< 500 bytes)"
+                })
 
         except Exception as ex:
-            lw.WriteLine("  LOI: " + str(ex))
-            failCount += 1
-            lw.WriteLine("")
+            lw.WriteLine("  ERROR: " + str(ex))
+            result_data["failed"] += 1
+            result_data["files"].append({
+                "input": stpFile,
+                "output": None,
+                "status": "failed",
+                "error": str(ex)
+            })
 
-    # Don dep file tam (chi giu .igs, .stp/.step, bo qua file moi)
-    lw.WriteLine("--- Don dep file tam ---")
+        finally:
+            if igesCreator is not None:
+                try:
+                    igesCreator.Destroy()
+                except:
+                    pass
+            if markId1 is not None:
+                try:
+                    theSession.DeleteUndoMark(markId1, None)
+                except:
+                    pass
+            if workPart is not None:
+                try:
+                    workPart.Close(NXOpen.BasePart.CloseWholeTree.TrueValue, NXOpen.BasePart.CloseModified.CloseModified, None)
+                except:
+                    pass
+
+        lw.WriteLine("")
+
+    # Clean up temporary files generated during conversion
+    lw.WriteLine("--- Cleaning temporary files ---")
     deletedCount = 0
     filesAfter = os.listdir(folder)
 
     for newFile in filesAfter:
         ext = os.path.splitext(newFile)[1].lower()
-
         if ext in (".igs", ".stp", ".step"):
             continue
-
         if newFile in filesBefore:
             continue
 
         fpath = os.path.join(folder, newFile)
         try:
             os.remove(fpath)
-            lw.WriteLine("  Da xoa: " + newFile)
+            lw.WriteLine("  Deleted: " + newFile)
             deletedCount += 1
         except Exception as ex:
-            lw.WriteLine("  Khong xoa duoc: " + newFile + " - " + str(ex))
+            lw.WriteLine("  Could not delete: " + newFile + " - " + str(ex))
 
-    # Don dep trong IGES folder (chi giu .igs)
     if os.path.exists(igesFolder):
         for f in os.listdir(igesFolder):
             ext = os.path.splitext(f)[1].lower()
-            if ext != ".igs":
+            if ext not in (".igs", ".json", ".tmp"):
                 try:
                     os.remove(os.path.join(igesFolder, f))
-                    lw.WriteLine("  Da xoa trong IGES: " + f)
+                    lw.WriteLine("  Deleted in IGES folder: " + f)
                     deletedCount += 1
                 except:
                     pass
 
-    lw.WriteLine("  Tong da xoa: %d file tam." % deletedCount)
+    lw.WriteLine("  Total temporary files deleted: %d" % deletedCount)
     lw.WriteLine("")
 
+    write_result_json(igesFolder, result_data, lw)
+
     lw.WriteLine("========================================")
-    lw.WriteLine("  KET QUA:")
-    lw.WriteLine("  Thanh cong: %d / %d" % (successCount, successCount + failCount))
-    lw.WriteLine("  That bai: %d" % failCount)
+    lw.WriteLine("  RESULTS:")
+    lw.WriteLine("  Total: %d" % result_data["total"])
+    lw.WriteLine("  Success: %d" % result_data["success"])
+    lw.WriteLine("  Failed: %d" % result_data["failed"])
+    lw.WriteLine("  Skipped: %d" % result_data["skipped"])
     lw.WriteLine("========================================")
     lw.Close()
 
-main()
+if __name__ in ("__main__", "__builtin__", "builtins"):
+    if NXOpen is not None:
+        main()
