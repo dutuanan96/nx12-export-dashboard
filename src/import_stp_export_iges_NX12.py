@@ -191,11 +191,12 @@ def main():
 
             igesCreator.Commit()
 
-            # Poll for async completion (up to 10s)
-            for _ in range(30):
+            # Poll for async completion (up to 60s)
+            for _ in range(120):
                 if is_valid_iges(igesPath, min_size=500):
+                    time.sleep(0.3)
                     break
-                time.sleep(0.3)
+                time.sleep(0.5)
 
             if is_valid_iges(igesPath, min_size=500):
                 size_bytes = os.path.getsize(igesPath)

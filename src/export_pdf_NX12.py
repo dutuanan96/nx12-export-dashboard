@@ -193,6 +193,13 @@ def main():
 
             pdfBuilder.Commit()
 
+            # Poll for PDF output completion (up to 30s)
+            for _ in range(60):
+                if os.path.exists(pdfPath) and os.path.getsize(pdfPath) > 0:
+                    time.sleep(0.2)
+                    break
+                time.sleep(0.5)
+
             if os.path.exists(pdfPath) and os.path.getsize(pdfPath) > 0:
                 lw.WriteLine("     OK: " + os.path.basename(pdfPath))
                 result_data["success"] += 1

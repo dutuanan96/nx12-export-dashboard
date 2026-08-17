@@ -188,11 +188,12 @@ def main():
 
             stepCreator.Commit()
 
-            # Poll for asynchronous translator completion (up to 10s)
-            for _ in range(30):
+            # Poll for asynchronous translator completion (up to 60s)
+            for _ in range(120):
                 if os.path.exists(stepPath) and os.path.getsize(stepPath) > 0:
+                    time.sleep(0.3)
                     break
-                time.sleep(0.3)
+                time.sleep(0.5)
 
             # Check output
             if os.path.exists(stepPath) and os.path.getsize(stepPath) > 0:

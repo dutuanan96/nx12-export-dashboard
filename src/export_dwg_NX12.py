@@ -102,11 +102,12 @@ def export_single_sheet(theSession, workPart, sheet, output_path, settings_file,
 
         dxfdwgCreator.Commit()
 
-        # Poll for async DWG translator output (up to 15s)
-        for _ in range(50):
+        # Poll for async DWG translator output (up to 60s)
+        for _ in range(120):
             if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                time.sleep(0.3)
                 return True
-            time.sleep(0.3)
+            time.sleep(0.5)
 
         return False
 
