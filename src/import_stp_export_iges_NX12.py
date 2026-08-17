@@ -17,20 +17,18 @@ def is_valid_iges(filepath, min_size=500):
     IGES files have standard 80-char card images with section identifiers (S, G, D, P, T) in col 72 (index 72).
     A valid IGES file must contain at least the G, D, P, and T sections and meet min_size.
     """
-    if not os.path.exists(filepath):
-        return False
-    size = os.path.getsize(filepath)
-    if size < min_size:
-        return False
     try:
+        size = os.path.getsize(filepath)
+        if size < min_size:
+            return False
         sections = set()
-        with open(filepath, "r") as f:
+        with open(filepath, "rb") as f:
             for line in f:
-                line_str = line.rstrip("\r\n")
-                if len(line_str) >= 73:
-                    sec = line_str[72]
-                    if sec in ("S", "G", "D", "P", "T"):
-                        sections.add(sec)
+                line_bytes = line.rstrip(b"\r\n")
+                if len(line_bytes) >= 73:
+                    sec_byte = line_bytes[72:73]
+                    if sec_byte in (b"S", b"G", b"D", b"P", b"T"):
+                        sections.add(sec_byte.decode("ascii", errors="ignore"))
         required_sections = {"G", "D", "P", "T"}
         return required_sections.issubset(sections)
     except Exception:
@@ -146,9 +144,24 @@ def main():
 
         try:
             lw.WriteLine("  1/2 Opening STP ...")
-            basePart1 = theSession.Parts.OpenBaseDisplay(stpPath)
+            res = theSession.Parts.OpenActiveDisplay(stpPath, NXOpen.DisplayPartOption.AllowAdditional)
+            loadStatus = None
+            if isinstance(res, tuple):
+                basePart1 = res[0]
+                if len(res) > 1:
+                    loadStatus = res[1]
+            else:
+                basePart1 = res
 
-            if basePart1 is None:
+            if loadStatus is not None and hasattr(loadStatus, "Dispose"):
+                try:
+                    loadStatus.Dispose()
+                except:
+                    pass
+
+            workPart = theSession.Parts.Work or theSession.Parts.Display or basePart1
+
+            if workPart is None:
                 lw.WriteLine("  ERROR: Could not open STP file!")
                 result_data["failed"] += 1
                 result_data["files"].append({
@@ -159,7 +172,6 @@ def main():
                 })
                 continue
 
-            workPart = theSession.Parts.Work
             lw.WriteLine("     OK: " + workPart.Name)
 
             lw.WriteLine("  2/2 Exporting IGES ...")
@@ -246,6 +258,10 @@ def main():
                     workPart.Close(NXOpen.BasePart.CloseWholeTree.TrueValue, NXOpen.BasePart.CloseModified.CloseModified, None)
                 except:
                     pass
+            try:
+                theSession.Parts.CloseAll(NXOpen.BasePart.CloseModified.CloseModified, None)
+            except:
+                pass
 
         lw.WriteLine("")
 
