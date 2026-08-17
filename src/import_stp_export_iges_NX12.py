@@ -301,25 +301,6 @@ def main():
                     workPart.Close(NXOpen.BasePart.CloseWholeTree.TrueValue, NXOpen.BasePart.CloseModified.CloseModified, None)
                 except:
                     pass
-            try:
-                theSession.Parts.CloseAll(NXOpen.BasePart.CloseModified.CloseModified, None)
-            except:
-                pass
-
-            # Per-file cleanup: remove intermediate .prt and .log files immediately
-            # so subsequent parts don't collide with extracted assembly subcomponents!
-            if os.path.exists(folder):
-                for f in os.listdir(folder):
-                    fpath = os.path.join(folder, f)
-                    if os.path.isfile(fpath):
-                        ext = os.path.splitext(f)[1].lower()
-                        if ext not in (".stp", ".step"):
-                            for _ in range(5):
-                                try:
-                                    os.remove(fpath)
-                                    break
-                                except Exception:
-                                    time.sleep(0.1)
 
         lw.WriteLine("")
 

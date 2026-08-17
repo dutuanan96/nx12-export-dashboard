@@ -537,6 +537,18 @@ class NX12Dashboard(tk.Tk):
             if self._cancel_requested:
                 return
 
+            # Clean temporary files for STP->IGES outside NX process safely
+            if subfolder == "IGES" and os.path.exists(folder):
+                for f in os.listdir(folder):
+                    fpath = os.path.join(folder, f)
+                    if os.path.isfile(fpath):
+                        ext = os.path.splitext(f)[1].lower()
+                        if ext not in (".stp", ".step"):
+                            try:
+                                os.remove(fpath)
+                            except Exception:
+                                pass
+
             # Poll, read and verify export_result.json matching current_run_id
             manifest_data = None
             for _ in range(20):
