@@ -70,7 +70,7 @@ def cleanup_logs(dwg_folder, base_name=None):
                     pass
 
 def export_single_sheet(theSession, workPart, sheet, output_path, settings_file, lw):
-    """Export one drawing sheet to DWG. Returns True if output file exists and non-empty."""
+    """Export one drawing sheet to DWG. Returns (success: bool, error_msg: str)."""
     # Pre-clean stale per-file output
     if os.path.exists(output_path):
         try:
@@ -78,7 +78,7 @@ def export_single_sheet(theSession, workPart, sheet, output_path, settings_file,
             lw.WriteLine("       Removed stale output: " + os.path.basename(output_path))
         except Exception as ex_del:
             lw.WriteLine("       ERROR: Cannot delete stale output: " + str(ex_del))
-            return False
+            return False, "Cannot delete stale output: " + str(ex_del)
 
     dxfdwgCreator = None
     markId = None
@@ -106,14 +106,14 @@ def export_single_sheet(theSession, workPart, sheet, output_path, settings_file,
         for _ in range(120):
             if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
                 time.sleep(0.3)
-                return True
+                return True, None
             time.sleep(0.5)
 
-        return False
+        return False, "DXF/DWG translator completed without output file after 60s"
 
     except Exception as ex:
         lw.WriteLine("       Error: " + str(ex))
-        return False
+        return False, str(ex)
     finally:
         if dxfdwgCreator is not None:
             try:
@@ -158,7 +158,18 @@ def main():
     if not os.path.exists(dwgFolder):
         os.makedirs(dwgFolder)
 
-    prtFiles = [f for f in os.listdir(folder) if f.lower().endswith(".prt")]
+    specific_file = None
+    if len(sys.argv) > 3 and sys.argv[3]:
+        specific_file = sys.argv[3]
+
+    prtFiles = []
+    if specific_file:
+        if os.path.exists(os.path.join(folder, specific_file)):
+            prtFiles.append(specific_file)
+        elif os.path.exists(specific_file):
+            prtFiles.append(os.path.basename(specific_file))
+    else:
+        prtFiles = [f for f in os.listdir(folder) if f.lower().endswith(".prt")]
 
     result_data = {
         "operation": "prt_to_dwg",
@@ -191,23 +202,6 @@ def main():
         baseName = os.path.splitext(prtFile)[0]
 
         lw.WriteLine("--- " + prtFile + " ---")
-
-        # ── Check file size ──
-        prtSize = os.path.getsize(prtPath)
-        prtMB = prtSize / 1024.0 / 1024.0
-
-        if prtMB > MAX_PRT_SIZE_MB:
-            skip_msg = "Skipped: %.1f MB > %.1f MB (manual export required)" % (prtMB, MAX_PRT_SIZE_MB)
-            lw.WriteLine("  " + skip_msg)
-            result_data["skipped"] += 1
-            result_data["files"].append({
-                "input": prtFile,
-                "output": None,
-                "status": "skipped",
-                "error": skip_msg
-            })
-            lw.WriteLine("")
-            continue
 
         workPart = None
 
@@ -247,17 +241,18 @@ def main():
 
             if len(sheetList) == 0:
                 lw.WriteLine("  No drawing sheets - skipping.")
-                result_data["failed"] += 1
+                result_data["skipped"] += 1
                 result_data["files"].append({
                     "input": prtFile,
                     "output": None,
-                    "status": "failed",
-                    "error": "No drawing sheets in part"
+                    "status": "skipped",
+                    "error": "Skipped: No drawing sheets in part"
                 })
                 continue
 
             lw.WriteLine("  4/4 Exporting DWG ...")
             sheetOkOutputs = []
+            sheetErrors = []
 
             for idx, sheet in enumerate(sheetList):
                 safeSheetName = sanitize_sheet_name(sheet.Name)
@@ -268,7 +263,7 @@ def main():
 
                 lw.WriteLine("     [%d/%d] Sheet: %s" % (idx + 1, len(sheetList), sheet.Name))
 
-                ok = export_single_sheet(theSession, workPart, sheet, sheetDwgPath, settingsFile, lw)
+                ok, err_sheet = export_single_sheet(theSession, workPart, sheet, sheetDwgPath, settingsFile, lw)
 
                 if ok:
                     fileSize = os.path.getsize(sheetDwgPath)
@@ -277,7 +272,8 @@ def main():
                     rel_output = os.path.join("DWG", os.path.basename(sheetDwgPath)).replace("\\", "/")
                     sheetOkOutputs.append(rel_output)
                 else:
-                    lw.WriteLine("       Failed!")
+                    lw.WriteLine("       Failed: " + str(err_sheet))
+                    sheetErrors.append("Sheet '%s': %s" % (sheet.Name, str(err_sheet)))
 
             if len(sheetOkOutputs) == len(sheetList) and len(sheetList) > 0:
                 result_data["success"] += 1
@@ -288,24 +284,16 @@ def main():
                     "error": None
                 })
                 lw.WriteLine("  Exported %d/%d sheets successfully" % (len(sheetOkOutputs), len(sheetList)))
-            elif len(sheetOkOutputs) > 0:
-                result_data["failed"] += 1
-                result_data["files"].append({
-                    "input": prtFile,
-                    "output": sheetOkOutputs,
-                    "status": "failed",
-                    "error": "Partial sheet export failure (%d/%d sheets exported)" % (len(sheetOkOutputs), len(sheetList))
-                })
-                lw.WriteLine("  Partial export: %d/%d sheets" % (len(sheetOkOutputs), len(sheetList)))
             else:
                 result_data["failed"] += 1
+                err_summary = "; ".join(sheetErrors) if sheetErrors else "All sheet exports failed"
                 result_data["files"].append({
                     "input": prtFile,
-                    "output": None,
+                    "output": sheetOkOutputs if sheetOkOutputs else None,
                     "status": "failed",
-                    "error": "All sheet exports failed"
+                    "error": err_summary
                 })
-                lw.WriteLine("  Failed to export sheets!")
+                lw.WriteLine("  Failed to export sheets: " + err_summary)
 
             lw.WriteLine("  COMPLETED: " + prtFile)
             lw.WriteLine("")
@@ -328,10 +316,10 @@ def main():
                 except:
                     pass
 
-        cleanup_logs(dwgFolder, baseName)
+    # Clean up log files only if 100% success; keep logs if there are failures for debugging
+    if result_data["failed"] == 0:
+        cleanup_logs(dwgFolder)
 
-    # Final cleanup of all logs
-    cleanup_logs(dwgFolder)
     write_result_json(dwgFolder, result_data, lw)
 
     lw.WriteLine("========================================")
