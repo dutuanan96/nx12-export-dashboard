@@ -10,6 +10,7 @@ import os
 import sys
 import time
 import json
+import io
 
 def is_valid_iges(filepath, min_size=500):
     """

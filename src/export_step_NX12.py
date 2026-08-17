@@ -10,6 +10,7 @@ import os
 import sys
 import time
 import json
+import io
 
 def get_ugii_base_dir():
     """Get the active NX installation directory dynamically."""
