@@ -104,13 +104,29 @@ def main():
 
     folder = ""
     run_id = None
+    specific_file = None
+
     if len(sys.argv) > 1 and sys.argv[1]:
-        folder = sys.argv[1]
+        first_arg = sys.argv[1]
+        if first_arg.lower().endswith(".json") and os.path.exists(first_arg):
+            try:
+                with open(first_arg, "r", encoding="utf-8") as f_cfg:
+                    cfg = json.load(f_cfg)
+                folder = cfg.get("folder", "")
+                run_id = cfg.get("run_id")
+                specific_file = cfg.get("target_file")
+            except Exception as e:
+                lw.WriteLine("Warning reading task config json: " + str(e))
+        else:
+            folder = first_arg
     else:
         folder = os.getcwd()
 
-    if len(sys.argv) > 2 and sys.argv[2]:
+    if not run_id and len(sys.argv) > 2 and sys.argv[2]:
         run_id = sys.argv[2]
+
+    if not specific_file and len(sys.argv) > 3 and sys.argv[3]:
+        specific_file = sys.argv[3]
 
     igesFolder = os.path.join(folder, "IGES")
     if not os.path.exists(igesFolder):
@@ -134,10 +150,6 @@ def main():
     lw.WriteLine("========================================")
     lw.WriteLine("")
 
-    specific_file = None
-    if len(sys.argv) > 3 and sys.argv[3]:
-        specific_file = sys.argv[3]
-
     # Tim file duoc chi dinh hoac tat ca file .stp / .step trong folder
     stpFiles = []
     if specific_file:
@@ -145,6 +157,12 @@ def main():
             stpFiles.append(specific_file)
         elif os.path.exists(specific_file):
             stpFiles.append(os.path.basename(specific_file))
+        else:
+            # Check for direct basename match in folder
+            for f in os.listdir(folder):
+                if f == specific_file or os.path.splitext(f)[0] == os.path.splitext(specific_file)[0]:
+                    stpFiles.append(f)
+                    break
     else:
         for f in os.listdir(folder):
             ext = os.path.splitext(f)[1].lower()

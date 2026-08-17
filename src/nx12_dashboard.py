@@ -545,14 +545,29 @@ class NX12Dashboard(tk.Tk):
 
                     self.after(0, self._set_status, f"⏳ [{idx+1}/{total_files}] 正在导出 IGES…", f"当前文件: {stp_name}", WARNING, False)
 
-                    cmd = [run_journal, script_path, "-args", folder, current_run_id, stp_name]
+                    # Write UTF-8 task config file to prevent Windows CLI argument encoding mangling
+                    task_cfg_file = os.path.join(folder, f".nx_task_{current_run_id}.json")
+                    try:
+                        with open(task_cfg_file, "w", encoding="utf-8") as f_cfg:
+                            json.dump({"folder": folder, "run_id": current_run_id, "target_file": stp_name}, f_cfg, indent=2)
+                    except Exception:
+                        pass
+
+                    cmd = [run_journal, script_path, "-args", task_cfg_file]
                     self._current_proc = subprocess.Popen(cmd, startupinfo=startupinfo, env=env)
 
                     try:
                         self._current_proc.wait(timeout=180)
                     except subprocess.TimeoutExpired:
                         self._cancel_task()
+                        if os.path.exists(task_cfg_file):
+                            try: os.remove(task_cfg_file)
+                            except: pass
                         break
+
+                    if os.path.exists(task_cfg_file):
+                        try: os.remove(task_cfg_file)
+                        except: pass
 
                     if self._cancel_requested:
                         break
@@ -635,14 +650,29 @@ class NX12Dashboard(tk.Tk):
 
                     self.after(0, self._set_status, f"⏳ [{idx+1}/{total_files}] 正在导出 DWG…", f"当前文件: {prt_name}", WARNING, False)
 
-                    cmd = [run_journal, script_path, "-args", folder, current_run_id, prt_name]
+                    # Write UTF-8 task config file to prevent Windows CLI argument encoding mangling
+                    task_cfg_file = os.path.join(folder, f".nx_task_{current_run_id}.json")
+                    try:
+                        with open(task_cfg_file, "w", encoding="utf-8") as f_cfg:
+                            json.dump({"folder": folder, "run_id": current_run_id, "target_file": prt_name}, f_cfg, indent=2)
+                    except Exception:
+                        pass
+
+                    cmd = [run_journal, script_path, "-args", task_cfg_file]
                     self._current_proc = subprocess.Popen(cmd, startupinfo=startupinfo, env=env)
 
                     try:
                         self._current_proc.wait(timeout=180)
                     except subprocess.TimeoutExpired:
                         self._cancel_task()
+                        if os.path.exists(task_cfg_file):
+                            try: os.remove(task_cfg_file)
+                            except: pass
                         break
+
+                    if os.path.exists(task_cfg_file):
+                        try: os.remove(task_cfg_file)
+                        except: pass
 
                     if self._cancel_requested:
                         break
