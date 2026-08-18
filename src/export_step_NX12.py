@@ -78,11 +78,21 @@ def main():
     folder = ""
     run_id = None
     if len(sys.argv) > 1 and sys.argv[1]:
-        folder = sys.argv[1]
+        first_arg = sys.argv[1]
+        if first_arg.lower().endswith(".json") and os.path.exists(first_arg):
+            try:
+                with io.open(first_arg, "r", encoding="utf-8-sig") as f_cfg:
+                    cfg = json.load(f_cfg)
+                folder = cfg.get("folder", "")
+                run_id = cfg.get("run_id")
+            except Exception as e:
+                lw.WriteLine("Warning reading task config json: " + str(e))
+        else:
+            folder = first_arg
     else:
         folder = os.getcwd()
 
-    if len(sys.argv) > 2 and sys.argv[2]:
+    if not run_id and len(sys.argv) > 2 and sys.argv[2]:
         run_id = sys.argv[2]
 
     lw.WriteLine("========================================")

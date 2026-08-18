@@ -638,120 +638,19 @@ class NX12Dashboard(tk.Tk):
                     self.after(0, self._handle_manifest_result, aggregated, label)
                 return
 
-            # ── Process Isolation for PRT -> DWG ─────────────────────────────
-            if subfolder == "DWG":
-                prt_files = [f for f in os.listdir(folder) if f.lower().endswith(".prt")]
-                total_files = len(prt_files)
+            # ── Single-Process Batch for DWG, PDF, STEP ──────────────────────
+            # Write UTF-8 task config file to prevent Windows CLI argument encoding mangling
+            task_cfg_file = os.path.join(folder, f".nx_task_{current_run_id}.json")
+            try:
+                with open(task_cfg_file, "w", encoding="utf-8") as f_cfg:
+                    json.dump({"folder": folder, "run_id": current_run_id}, f_cfg, indent=2)
+            except Exception:
+                task_cfg_file = None
 
-                if total_files == 0:
-                    empty_res = {"operation": "prt_to_dwg", "run_id": current_run_id, "total": 0, "success": 0, "failed": 0, "skipped": 0, "files": []}
-                    self.after(0, self._handle_manifest_result, empty_res, label)
-                    return
-
-                aggregated = {
-                    "operation": "prt_to_dwg",
-                    "run_id": current_run_id,
-                    "total": total_files,
-                    "success": 0,
-                    "failed": 0,
-                    "skipped": 0,
-                    "files": []
-                }
-
-                for idx, prt_name in enumerate(prt_files):
-                    if self._cancel_requested:
-                        break
-
-                    self.after(0, self._set_status, f"⏳ [{idx+1}/{total_files}] 正在导出 DWG…", f"当前文件: {prt_name}", WARNING, False)
-
-                    # Remove stale per-file result manifest before launching NX
-                    if os.path.exists(result_json_path):
-                        try:
-                            os.remove(result_json_path)
-                        except Exception:
-                            pass
-
-                    # Write UTF-8 task config file to prevent Windows CLI argument encoding mangling
-                    task_cfg_file = os.path.join(folder, f".nx_task_{current_run_id}.json")
-                    try:
-                        with open(task_cfg_file, "w", encoding="utf-8") as f_cfg:
-                            json.dump({"folder": folder, "run_id": current_run_id, "target_file": prt_name}, f_cfg, indent=2)
-                    except Exception:
-                        pass
-
-                    cmd = [run_journal, script_path, "-args", task_cfg_file]
-                    self._current_proc = subprocess.Popen(cmd, startupinfo=startupinfo, env=env)
-
-                    returncode = -1
-                    try:
-                        returncode = self._current_proc.wait(timeout=600)
-                    except subprocess.TimeoutExpired:
-                        self._cancel_task()
-                        if os.path.exists(task_cfg_file):
-                            try: os.remove(task_cfg_file)
-                            except: pass
-                        break
-
-                    if os.path.exists(task_cfg_file):
-                        try: os.remove(task_cfg_file)
-                        except: pass
-
-                    if self._cancel_requested:
-                        break
-
-                    # Read and strictly validate per-file result from export_result.json
-                    per_file_entry = None
-                    if os.path.exists(result_json_path):
-                        try:
-                            with open(result_json_path, "r", encoding="utf-8") as f_res:
-                                p_data = json.load(f_res)
-                            files = p_data.get("files") or []
-                            if (
-                                p_data.get("run_id") == current_run_id
-                                and files
-                                and files[0].get("input") == prt_name
-                            ):
-                                per_file_entry = files[0]
-                        except Exception:
-                            pass
-
-                    if per_file_entry:
-                        status = per_file_entry.get("status")
-                        if status == "success":
-                            aggregated["success"] += 1
-                        elif status == "skipped":
-                            aggregated["skipped"] += 1
-                        else:
-                            aggregated["failed"] += 1
-                        aggregated["files"].append(per_file_entry)
-                    else:
-                        aggregated["failed"] += 1
-                        aggregated["files"].append({
-                            "input": prt_name,
-                            "output": None,
-                            "status": "failed",
-                            "error": f"Journal produced no valid result manifest (NX return code: {returncode})"
-                        })
-
-                # Write final aggregated manifest
-                if not self._cancel_requested:
-                    try:
-                        tmp_json = result_json_path + ".tmp"
-                        with open(tmp_json, "w", encoding="utf-8") as f:
-                            json.dump(aggregated, f, indent=2)
-                        if os.path.exists(result_json_path):
-                            try: os.remove(result_json_path)
-                            except: pass
-                        os.rename(tmp_json, result_json_path)
-                    except Exception:
-                        pass
-
-                    self._last_result = aggregated
-                    self.after(0, self._handle_manifest_result, aggregated, label)
-                return
-
-            # ── Single-Process Batch for PDF, STEP ───────────────────────────
-            cmd = [run_journal, script_path, "-args", folder, current_run_id]
+            if task_cfg_file and os.path.exists(task_cfg_file):
+                cmd = [run_journal, script_path, "-args", task_cfg_file]
+            else:
+                cmd = [run_journal, script_path, "-args", folder, current_run_id]
 
             self._current_proc = subprocess.Popen(
                 cmd,
@@ -763,8 +662,15 @@ class NX12Dashboard(tk.Tk):
                 returncode = self._current_proc.wait(timeout=600)
             except subprocess.TimeoutExpired:
                 self._cancel_task()
+                if task_cfg_file and os.path.exists(task_cfg_file):
+                    try: os.remove(task_cfg_file)
+                    except: pass
                 self.after(0, self._set_status, "❌ 执行超时", "任务运行超过 10 分钟已自动终止", ERROR)
                 return
+
+            if task_cfg_file and os.path.exists(task_cfg_file):
+                try: os.remove(task_cfg_file)
+                except: pass
 
             if self._cancel_requested:
                 return
