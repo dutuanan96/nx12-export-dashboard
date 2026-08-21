@@ -553,8 +553,9 @@ class NX12Dashboard(tk.Tk):
                         except Exception:
                             pass
 
-                    # Write UTF-8 task config file to prevent Windows CLI argument encoding mangling
-                    task_cfg_file = os.path.join(folder, f".nx_task_{current_run_id}.json")
+                    # Write task config to %TEMP% to avoid spaces in path (run_journal.exe splits -args at spaces)
+                    temp_dir = os.environ.get("TEMP", os.environ.get("TMP", os.path.dirname(os.path.abspath(__file__))))
+                    task_cfg_file = os.path.join(temp_dir, f".nx_task_{current_run_id}.json")
                     try:
                         with open(task_cfg_file, "w", encoding="utf-8") as f_cfg:
                             json.dump({"folder": folder, "run_id": current_run_id, "target_file": stp_name}, f_cfg, indent=2)
@@ -639,8 +640,9 @@ class NX12Dashboard(tk.Tk):
                 return
 
             # ── Single-Process Batch for DWG, PDF, STEP ──────────────────────
-            # Write UTF-8 task config file to prevent Windows CLI argument encoding mangling
-            task_cfg_file = os.path.join(folder, f".nx_task_{current_run_id}.json")
+            # Write task config to %TEMP% to avoid spaces in path (run_journal.exe splits -args at spaces)
+            temp_dir = os.environ.get("TEMP", os.environ.get("TMP", os.path.dirname(os.path.abspath(__file__))))
+            task_cfg_file = os.path.join(temp_dir, f".nx_task_{current_run_id}.json")
             try:
                 with open(task_cfg_file, "w", encoding="utf-8") as f_cfg:
                     json.dump({"folder": folder, "run_id": current_run_id}, f_cfg, indent=2)

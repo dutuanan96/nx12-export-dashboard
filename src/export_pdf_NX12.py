@@ -11,6 +11,7 @@ import os
 import sys
 import json
 import time
+import io
 
 def write_result_json(pdf_folder, result_data, lw=None):
     """Write export_result.json atomically using a temporary file."""
